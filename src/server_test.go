@@ -640,3 +640,27 @@ func TestDiscoveredPort(t *testing.T) {
 		t.Error("a guessed process's ports used")
 	}
 }
+
+// The server restarts with another model (loading, then idle) while llm-top runs: the new model's slot is looked at
+// once, so CONTEXT shows no leftover numbers from the old one.
+func TestRestartRereadsSlots(t *testing.T) {
+	m := &mock{metrics: metricsText(0), slots: slotsJSON(slotP(65536, slot(0, false, 9, 30000, 30000, 0, 500, false)))}
+	srv := httptest.NewServer(m)
+	defer srv.Close()
+	s := newStepper(t, srv.URL)
+	s.step(3)
+	if s.st.srv.Slot.NPrompt != 30000 {
+		t.Fatalf("startup slot not read: %+v", s.st.srv.Slot)
+	}
+	m.mu.Lock()
+	m.health, m.metrics, m.slots = 503, "", slotsJSON(slotP(262144, slot(0, false, -1, 0, 0, 0, 0, false)))
+	m.mu.Unlock()
+	s.step(3) // loading
+	m.mu.Lock()
+	m.health, m.metrics = 0, metricsText(0)
+	m.mu.Unlock()
+	h := s.step(4)
+	if !s.st.srv.HaveSlots || s.st.srv.Slot.NPrompt != 0 || !strings.Contains(h, "0 / 33k") {
+		t.Errorf("after restart: haveSlots=%v slot %+v\n%s", s.st.srv.HaveSlots, s.st.srv.Slot, h)
+	}
+}
