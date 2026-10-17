@@ -659,7 +659,8 @@ func TestRestartRereadsSlots(t *testing.T) {
 	m.mu.Lock()
 	m.health, m.metrics = 0, metricsText(0)
 	m.mu.Unlock()
-	h := s.step(4)
+	s.step(4)
+	h := frame(t, s.st, 120, 40)
 	if !s.st.srv.HaveSlots || s.st.srv.Slot.NPrompt != 0 || !strings.Contains(h, "0 / 33k") {
 		t.Errorf("after restart: haveSlots=%v slot %+v\n%s", s.st.srv.HaveSlots, s.st.srv.Slot, h)
 	}
