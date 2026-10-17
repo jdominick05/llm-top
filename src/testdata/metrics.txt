@@ -1,0 +1,111 @@
+# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed, excluding cached tokens
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 1.40275e+06
+# HELP llamacpp:prompt_tokens_cached_total Number of prompt tokens reused from the cache
+# TYPE llamacpp:prompt_tokens_cached_total counter
+llamacpp:prompt_tokens_cached_total 1.8878e+07
+# HELP llamacpp:prompt_seconds_total Total time spent processing prompts
+# TYPE llamacpp:prompt_seconds_total counter
+llamacpp:prompt_seconds_total 2314.98
+# HELP llamacpp:tokens_predicted_total Number of generation tokens processed
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 218365
+# HELP llamacpp:tokens_predicted_seconds_total Total time spent generating tokens
+# TYPE llamacpp:tokens_predicted_seconds_total counter
+llamacpp:tokens_predicted_seconds_total 7862.45
+# HELP llamacpp:n_decode_total Total number of llama_decode() calls, excluding speculative decoding and multimodal decoding
+# TYPE llamacpp:n_decode_total counter
+llamacpp:n_decode_total 200323
+# HELP llamacpp:n_tokens_max Largest observed sequence length (prompt + generation)
+# TYPE llamacpp:n_tokens_max counter
+llamacpp:n_tokens_max 186269
+# HELP llamacpp:spec_decode_num_draft_tokens_total Speculative: Total draft tokens generated
+# TYPE llamacpp:spec_decode_num_draft_tokens_total counter
+llamacpp:spec_decode_num_draft_tokens_total 47422
+# HELP llamacpp:spec_decode_num_accepted_tokens_total Speculative: Total draft tokens accepted by the target model
+# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter
+llamacpp:spec_decode_num_accepted_tokens_total 19028
+# HELP llamacpp:spec_decode_num_drafts_total Speculative: Total speculative decoding verification steps
+# TYPE llamacpp:spec_decode_num_drafts_total counter
+llamacpp:spec_decode_num_drafts_total 745
+# HELP llamacpp:prompt_tokens_seconds Average prompt throughput in tokens/s
+# TYPE llamacpp:prompt_tokens_seconds gauge
+llamacpp:prompt_tokens_seconds 0
+# HELP llamacpp:predicted_tokens_seconds Average generation throughput in tokens/s
+# TYPE llamacpp:predicted_tokens_seconds gauge
+llamacpp:predicted_tokens_seconds 0
+# HELP llamacpp:requests_processing Number of requests processing
+# TYPE llamacpp:requests_processing gauge
+llamacpp:requests_processing 1
+# HELP llamacpp:requests_deferred Number of requests deferred
+# TYPE llamacpp:requests_deferred gauge
+llamacpp:requests_deferred 0
+# HELP llamacpp:n_busy_slots_per_decode Average number of busy slots per llama_decode() call
+# TYPE llamacpp:n_busy_slots_per_decode gauge
+llamacpp:n_busy_slots_per_decode 1
+# HELP llamacpp:spec_decode_num_accepted_tokens_per_pos_total Accepted tokens per draft position
+# TYPE llamacpp:spec_decode_num_accepted_tokens_per_pos_total counter
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="0"} 699
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="1"} 637
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="2"} 589
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="3"} 544
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="4"} 513
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="5"} 499
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="6"} 482
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="7"} 470
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="8"} 454
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="9"} 445
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="10"} 430
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="11"} 408
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="12"} 393
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="13"} 382
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="14"} 368
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="15"} 364
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="16"} 358
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="17"} 351
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="18"} 341
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="19"} 333
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="20"} 327
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="21"} 320
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="22"} 316
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="23"} 300
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="24"} 294
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="25"} 282
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="26"} 277
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="27"} 272
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="28"} 267
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="29"} 264
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="30"} 261
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="31"} 258
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="32"} 254
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="33"} 254
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="34"} 251
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="35"} 251
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="36"} 249
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="37"} 247
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="38"} 246
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="39"} 239
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="40"} 235
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="41"} 227
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="42"} 220
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="43"} 215
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="44"} 213
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="45"} 211
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="46"} 210
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="47"} 210
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="48"} 208
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="49"} 206
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="50"} 206
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="51"} 200
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="52"} 197
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="53"} 193
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="54"} 185
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="55"} 177
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="56"} 172
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="57"} 165
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="58"} 155
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="59"} 151
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="60"} 148
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="61"} 147
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="62"} 145
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="63"} 143

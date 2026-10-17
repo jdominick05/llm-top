@@ -1,0 +1,79 @@
+name: release
+
+# Push a tag vX.Y.Z (release.ps1 creates it) to publish windows/amd64 and linux/amd64 builds as a GitHub Release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: build
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' || { echo "tag $GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }
+          grep -q "^## $v " CHANGELOG.md || { echo "CHANGELOG.md has no '## $v' heading"; exit 1; }
+          mkdir -p dist stage
+          for t in windows/amd64 linux/amd64; do
+            os="${t%/*}"; arch="${t#*/}"; name="llm-top-$v-$os-$arch"; exe=llm-top
+            [ "$os" = windows ] && exe=llm-top.exe
+            mkdir -p "stage/$name"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$v" -o "stage/$name/$exe" ./src
+            cp README.md CHANGELOG.md LICENSE "stage/$name/"
+            if [ "$os" = windows ]; then
+              (cd "stage/$name" && zip -q "../../dist/$name.zip" "$exe" README.md CHANGELOG.md LICENSE)
+            else
+              chmod 755 "stage/$name/$exe"
+              tar -C "stage/$name" --owner=0 --group=0 -czf "dist/$name.tar.gz" "$exe" README.md CHANGELOG.md LICENSE
+            fi
+          done
+          test "$(stage/llm-top-$v-linux-amd64/llm-top -version)" = "llm-top $v"
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          awk -v v="$v" 'index($0, "## " v " ") == 1 {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          cat notes.md
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "llm-top ${GITHUB_REF_NAME#v}" --notes-file notes.md
+
+  # what a new user runs: no token, no gh, Windows PowerShell 5.1 and the curl | sh one-liner
+  install-check:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: install the published release like a new user
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Version "$v" -Dir "$RUNNER_TEMP/llm-top" -NoPath
+            out=$("$RUNNER_TEMP/llm-top/llm-top.exe" -version)
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "\$env:LLMTOP_DIR='$RUNNER_TEMP\latest'; irm https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/install.ps1 | iex"
+            "$RUNNER_TEMP/latest/llm-top.exe" -version
+          else
+            LLMTOP_BIN="$RUNNER_TEMP/bin" sh install.sh "$v"
+            out=$("$RUNNER_TEMP/bin/llm-top" -version)
+            curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/install.sh" | LLMTOP_BIN="$RUNNER_TEMP/latest" sh
+            "$RUNNER_TEMP/latest/llm-top" -version
+          fi
+          echo "$out"
+          test "$out" = "llm-top $v"

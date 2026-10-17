@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/jdominick05/llm-top/security/advisories/new
+    about: llm-top sending anything but GETs, leaking a key or chat text. Please report privately.
+  - name: Contributing guide
+    url: https://github.com/jdominick05/llm-top/blob/main/CONTRIBUTING.md
+    about: How to report bugs well and send changes.

@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        shell: bash
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - name: race detector
+        if: runner.os == 'Linux'
+        run: go test -count=1 -race ./...
+      - name: build
+        shell: bash
+        run: CGO_ENABLED=0 go build -trimpath -o llm-top-ci ./src
+      - name: smoke (-version, -once with a fresh config and no server)
+        shell: bash
+        run: |
+          ./llm-top-ci -version
+          cfg="$RUNNER_TEMP/llm-top.json"
+          ./llm-top-ci -config "$cfg" -once 100 40 > frame.txt
+          cat frame.txt
+          grep -q "DOWN" frame.txt
+          grep -q '"server_url"' "$cfg"
+      - name: install scripts parse
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            pwsh -NoProfile -Command '$e=$null; [System.Management.Automation.Language.Parser]::ParseFile("install.ps1",[ref]$null,[ref]$e) | Out-Null; if ($e) { $e; exit 1 }'
+          else
+            sh -n install.sh && dash -n install.sh
+          fi

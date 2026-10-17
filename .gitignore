@@ -1,0 +1,9 @@
+# build output
+*.exe
+/llm-top
+/llm-top-ci
+dist/
+# written on first run of a dev build
+llm-top.json
+# machine-specific notes for Claude Code
+CLAUDE.local.md

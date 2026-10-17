@@ -1,0 +1,56 @@
+name: Bug report
+description: Something shows wrong numbers, the wrong state, breaks the layout or crashes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please don't paste session logs, LM Studio conversations or API keys.
+  - type: input
+    id: version
+    attributes:
+      label: llm-top version
+      description: Output of `llm-top -version`
+      placeholder: llm-top 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Windows 11, Windows 10, Linux, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Server
+      options: [llama-server (llama.cpp), LM Studio, Both, None / not detected]
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Server version and setup
+      description: llama-server build and the flags you start it with (no API keys), or the LM Studio version and model
+      placeholder: llama-server b11558 -m model.gguf -c 131072 --metrics --port 8091
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and font
+      placeholder: Windows Terminal 1.24, MesloLGS NF
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: A screenshot helps most.
+    validations:
+      required: true
+  - type: textarea
+    id: frame
+    attributes:
+      label: A frame as text (optional)
+      description: |
+        `llm-top -once 120 40 > frame.txt`, then paste it here. Read it first: ACTIVITY shows your agent's recent
+        prompts, tool calls and file names; cut anything private.
+      render: text

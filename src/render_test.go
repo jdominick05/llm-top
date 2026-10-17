@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 jdominick05
+
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+)
+
+// TestRenderAllSizes renders every terminal size from 1x1 up, for an idle server with no sessions, a busy one with
+// demo sessions, a session with hundreds of requests and LM Studio. frame() fails on any line wider than the terminal;
+// a panic fails the test.
+func TestRenderAllSizes(t *testing.T) {
+	down := &state{cfg: defaultConfig, bases: []string{"http://127.0.0.1:8080"}, known: map[string]*session{}}
+	busy := demoState(t)
+	busy.srv.Slot = slotJSON{NCtx: 131072, Processing: true, Task: 7, NPrompt: 61400, NProcessed: 9000, NCache: 52800}
+	busy.srv.Busy, busy.srv.curRead = 1, 2400
+	many := demoState(t)
+	s := many.sessions[0]
+	for i := 0; i < 300; i++ {
+		s.prompts = append(s.prompts, 1000+i*300)
+		if i%50 == 0 {
+			s.compactBefore[len(s.prompts)-1] = true
+		}
+	}
+	lm := demoState(t)
+	lm.srv = serverState{Kind: "lmstudio", Polled: true, Up: true, LMLoaded: 1, LM: lmState{Phase: "reading", Pct: 40}, busySince: time.Now()}
+	for name, st := range map[string]*state{"down": down, "busy": busy, "many": many, "lmstudio": lm} {
+		for w := 1; w <= 130; w++ {
+			for _, h := range []int{1, 2, 5, 12, 30, 60} {
+				frame(t, st, w, h)
+			}
+		}
+		for h := 1; h <= 60; h++ {
+			frame(t, st, 50, h)
+		}
+		if t.Failed() {
+			t.Fatalf("%s: see above", name)
+		}
+	}
+}
+
+func TestColumnsDegenerate(t *testing.T) {
+	for _, w := range []int{-3, 0, 1} {
+		for _, h := range []int{0, 1, 5} {
+			out := columns([]float64{1, 2, 3}, []bool{false, true, false}, w, h, 3, cAccent, cRed)
+			if len(out) != h {
+				t.Errorf("columns(w=%d, h=%d) gave %d rows", w, h, len(out))
+			}
+		}
+	}
+	if out := columns(nil, nil, -1, 5, 1, cAccent, cRed); len(out) != 5 {
+		t.Errorf("no values: %d rows", len(out))
+	}
+}
+
+// The session list is re-sorted by activity every scan; the session picked with tab must stay picked.
+func TestSelectionSticks(t *testing.T) {
+	st := demoState(t)
+	m := model{st: st, w: 120, h: 40, sel: new(string)}
+	m.pick(1)
+	if *m.sel != st.sessions[1].Path {
+		t.Fatalf("tab picked %q", *m.sel)
+	}
+	want := st.sessions[1]
+	st.sessions[0], st.sessions[1] = st.sessions[1], st.sessions[0] // another agent became the newest
+	if got := st.sessions[st.selIndex(*m.sel)]; got != want {
+		t.Errorf("selection moved to %s", got.Project)
+	}
+	m.pick(1)
+	if *m.sel != st.sessions[1].Path {
+		t.Errorf("tab after re-sort picked %q", *m.sel)
+	}
+	m.pick(-2)
+	if *m.sel != st.sessions[2].Path {
+		t.Errorf("shift+tab wrap picked %q", *m.sel)
+	}
+	*m.sel = "gone"
+	if st.selIndex(*m.sel) != 0 {
+		t.Error("a vanished session should fall back to the newest")
+	}
+}
+
+// With no live model every panel says why, instead of zeros or the last picture as if it were current.
+func TestOfflineStates(t *testing.T) {
+	cases := []struct {
+		name string
+		srv  serverState
+		pill string
+		why  string
+	}{
+		{"before the first poll", serverState{}, "CONNECTING", "looking for the server"},
+		{"no server, its process still there", serverState{Polled: true, Kind: "llama.cpp"}, "DOWN", "llama-server is running but not answering"},
+		{"loading", serverState{Polled: true, Kind: "llama.cpp", Loading: true}, "LOADING", "model loading"},
+		{"asleep", serverState{Polled: true, Kind: "llama.cpp", Up: true, Sleeping: true}, "SLEEP", "model asleep"},
+		{"router, nothing loaded", serverState{Polled: true, Kind: "llama.cpp", Up: true, Router: true, RouterNote: "no model loaded"}, "ROUTER", "no model loaded"},
+		{"LM Studio, no model", serverState{Polled: true, Kind: "lmstudio", Up: true}, "NO MODEL", "no model loaded"},
+	}
+	for _, c := range cases {
+		st := demoState(t)
+		st.srv = c.srv
+		st.srv.ReadRate, st.srv.GenRate = ring{}, ring{}
+		st.sessions[0].lastT = time.Now().Add(-27 * time.Minute)
+		out := frame(t, st, 120, 50)
+		for _, want := range []string{c.pill, "no live context: " + c.why, "▸ " + c.why, "— tok/s", "what filled it · rocket-api · 27m ago"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: missing %q", c.name, want)
+			}
+		}
+		if strings.Contains(out, "GPU-bound") || strings.Contains(out, "idle · no fallbacks") || strings.Contains(out, "131k?") {
+			t.Errorf("%s: a verdict or context size for a model that isn't there", c.name)
+		}
+	}
+	// no server and no process
+	st0 := demoState(t)
+	st0.srv, st0.sys.Pid = serverState{Polled: true, Kind: "llama.cpp"}, 0
+	if out := frame(t, st0, 120, 50); !strings.Contains(out, "no live context: no server running") || !strings.Contains(out, "▸ no server running") {
+		t.Errorf("no server, no process:\n%s", out)
+	}
+	// live and recent: no age, real numbers
+	st := demoState(t)
+	st.sessions[0].lastT = time.Now()
+	out := frame(t, st, 120, 50)
+	if strings.Contains(out, "no live context") || strings.Contains(out, "ago ·") || strings.Contains(out, "— tok/s") {
+		t.Errorf("live frame marked offline")
+	}
+}
+
+// mesloGlyphs is every non-ASCII character llm-top draws, each checked to exist in MesloLGS NF (the recommended
+// font). A glyph the font lacks is drawn from a fallback font, often at the wrong width, which breaks the boxes.
+// Adding a glyph here means checking it is in MesloLGS NF first.
+const mesloGlyphs = "·—•…⇣⇶−≈⌕─│╭╮╯╰▁▂▃▄▅▆▇█░■▤▶▸◂◆●◧◴◵◶◷★☑✂✎✓✗✚✦❯"
+
+func TestGlyphsInFont(t *testing.T) {
+	ok := map[rune]bool{}
+	for _, r := range mesloGlyphs {
+		ok[r] = true
+	}
+	busy := demoState(t)
+	busy.srv.Slot = slotJSON{NCtx: 131072, Processing: true, Task: 7, NPrompt: 61400, NProcessed: 9000, NCache: 52800}
+	busy.srv.Busy = 1
+	comp := demoState(t)
+	comp.srv.Slot = slotJSON{NCtx: 131072, Processing: true, Task: 8, NPrompt: 61400, NProcessed: 61400}
+	comp.srv.Slot.Params.NPredict = compactBudget
+	comp.srv.Busy, comp.srv.Decoded = 1, 300
+	hold := demoState(t)
+	hold.sys.Hold = "gpu job"
+	states := []*state{busy, comp, hold, {cfg: defaultConfig, bases: []string{"http://127.0.0.1:8080"}, known: map[string]*session{}}}
+	for _, k := range []string{"run_shell_command", "read_file", "edit", "write_file", "grep_search", "list_directory",
+		"web_fetch", "ask_user_question", "task", "todo_write", "save_memory", "skill", "mcp__x__y"} {
+		ic, _ := iconFor(event{Kind: "tool", Name: k})
+		for _, r := range ic {
+			if r > 127 && !ok[r] {
+				t.Errorf("tool %s icon %q (U+%04X) is not in MesloLGS NF", k, r, r)
+			}
+		}
+	}
+	for _, st := range states {
+		for f := 0; f < len(spin); f++ {
+			out := model{st: st, w: 140, h: 50, frame: f}.render()
+			for _, r := range ansi.Strip(out) {
+				if r > 127 && !ok[r] {
+					t.Errorf("frame draws %q (U+%04X), not in MesloLGS NF", r, r)
+					ok[r] = true // once
+				}
+			}
+		}
+	}
+}
+
+// An agent session that has been quiet for a while is history: CONTEXT and ACTIVITY don't show it until it is
+// picked with tab, and then say how old it is.
+func TestStaleSessionNotShown(t *testing.T) {
+	st := demoState(t)
+	for _, s := range st.sessions {
+		s.Mod, s.lastT = time.Now().Add(-48*time.Minute), time.Now().Add(-48*time.Minute)
+	}
+	m := model{st: st, w: 120, h: 50, sel: new(string)}
+	out := frame(t, st, 120, 50)
+	if !strings.Contains(out, "no agent active in the last 10 min") || strings.Contains(out, "what fill") ||
+		strings.Contains(out, "read_file") || !strings.Contains(out, "no agent active · tab shows earlier ones") {
+		t.Errorf("stale session shown:\n%s", out)
+	}
+	m.pick(1)
+	if *m.sel != st.sessions[0].Path {
+		t.Fatalf("first tab picked %q, want the newest", *m.sel)
+	}
+	out = ansi.Strip(m.render())
+	if !strings.Contains(out, "what filled it · rocket-api · 48m ago") || !strings.Contains(out, "read_file") {
+		t.Errorf("picked session not shown:\n%s", out)
+	}
+	// LM Studio without requests yet: no llama-server advice
+	st.srv = serverState{Polled: true, Kind: "lmstudio", Up: true, LMLoaded: 1, Model: "m", LM: lmState{Found: true, Debug: true}}
+	if out := frame(t, st, 120, 50); strings.Contains(out, "--metrics") || !strings.Contains(out, "no request since llm-top started") {
+		t.Errorf("LM Studio idle notes:\n%s", out)
+	}
+	// busy server: the newest session stays shown even if its log is old (a long request writes nothing)
+	st2 := demoState(t)
+	st2.sessions[0].Mod = time.Now().Add(-30 * time.Minute)
+	st2.srv.Slot.Processing, st2.srv.Busy = true, 1
+	if out := frame(t, st2, 120, 50); !strings.Contains(out, "rocket-api ·") {
+		t.Errorf("busy server lost its session")
+	}
+}
