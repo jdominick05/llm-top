@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- THROUGHPUT: speculative decoding rows named after the drafter(s) in the slot's `speculative.types`
+  (`ngram-mod`, `dflash`, `dflash+ngram`, else `draft`) instead of "ngram accept": acceptance over the last 120
+  polls that drafted (with a sparkline) next to the rate since server start, accepted tokens per draft (recent and
+  since start) and, if there is room, acceptance per draft position. Hidden when the server does not draft.
+  Counters going down (a server restart) start the recent window over.
+
 ## 0.2.0 - 2026-10-17
 
 First public release. Windows (amd64) and Linux (amd64). Licensed AGPL-3.0-or-later.

@@ -665,3 +665,127 @@ func TestRestartRereadsSlots(t *testing.T) {
 		t.Errorf("after restart: haveSlots=%v slot %+v\n%s", s.st.srv.HaveSlots, s.st.srv.Slot, h)
 	}
 }
+
+// ---------- speculative decoding ----------
+
+// slotT is slot() with the request's speculative.types.
+func slotT(types string, s string) string {
+	return strings.Replace(s, `"next_token"`, fmt.Sprintf(`"params":{"speculative.types":%q},"next_token"`, types), 1)
+}
+
+// specMetrics is metricsText with the speculative decoding counters.
+func specMetrics(processing int, acc, tok, drafts float64) string {
+	return metricsText(processing) + fmt.Sprintf("llamacpp:spec_decode_num_accepted_tokens_total %g\n"+
+		"llamacpp:spec_decode_num_draft_tokens_total %g\nllamacpp:spec_decode_num_drafts_total %g\n", acc, tok, drafts)
+}
+
+func TestDrafters(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		known    bool
+	}{
+		{"", "", false}, {"  ", "", false}, {"none", "", true}, {"none,none", "", true},
+		{"none,ngram-mod", "ngram-mod", true}, {"ngram-mod", "ngram-mod", true}, {"draft-dflash", "dflash", true},
+		{"draft-dflash,ngram-mod", "dflash+ngram", true}, {"none, draft-dflash , ngram-mod", "dflash+ngram", true},
+		{"draft", "draft", true}, {"ngram-mod,ngram-simple", "ngram", true}, {"eagle3,ngram-map-k", "eagle3+ngram", true},
+	} {
+		if n, k := drafters(c.in); n != c.want || k != c.known {
+			t.Errorf("drafters(%q) = %q %v, want %q %v", c.in, n, k, c.want, c.known)
+		}
+	}
+}
+
+// Busy with ngram-mod: the counters move by 60 accepted of 100 drafted in 2 drafts per poll, while since start
+// it is 1540 of 10900 (14.1%) in 118 drafts (13.1 tok/draft). A restart (counters going down) drops the window.
+func TestSpecRecentAcceptance(t *testing.T) {
+	m := &mock{}
+	srv := httptest.NewServer(m)
+	defer srv.Close()
+	s := newStepper(t, srv.URL)
+	acc, tok, drafts := 1000.0, 10000.0, 100.0
+	m.mu.Lock()
+	m.slots = slotsJSON(slotT("none,ngram-mod", slot(0, true, 4, 9000, 9000, 8000, 50, false)))
+	m.metrics = specMetrics(1, acc, tok, drafts)
+	m.mu.Unlock()
+	for i := 0; i < 10; i++ {
+		s.step(1)
+		acc, tok, drafts = acc+60, tok+100, drafts+2
+		m.mu.Lock()
+		m.metrics = specMetrics(1, acc, tok, drafts)
+		m.mu.Unlock()
+	}
+	sp := &s.st.srv.Spec
+	rate, per, ok := sp.recent()
+	if !ok || len(sp.Samples) != 9 || rate != 0.6 || per != 30 {
+		t.Fatalf("recent = %v %v %v over %d samples, want 0.6 30 over 9", rate, per, ok, len(sp.Samples))
+	}
+	for _, w := range []int{120, 90} {
+		out := frame(t, s.st, w, 40)
+		for _, want := range []string{"ngram-mod ", "60.0%", "· 14.1% all", "tok/draft", "30.0", "· 13.1 all"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%d cols: no %q in\n%s", w, want, out)
+			}
+		}
+		if strings.Contains(out, "ngram accept") {
+			t.Error("old label")
+		}
+	}
+	m.mu.Lock()
+	m.metrics = specMetrics(1, 5, 20, 1) // restarted
+	m.mu.Unlock()
+	s.step(1)
+	if len(sp.Samples) != 0 {
+		t.Errorf("window kept %d samples across a restart", len(sp.Samples))
+	}
+	m.mu.Lock()
+	m.metrics = specMetrics(1, 5+30, 20+100, 1+4)
+	m.slots = slotsJSON(slotT("draft-dflash,ngram-mod", slot(0, true, 5, 9000, 9000, 8000, 50, false)))
+	m.mu.Unlock()
+	s.step(1)
+	if rate, per, _ := sp.recent(); rate != 0.3 || per != 7.5 {
+		t.Errorf("after restart: %v %v, want 0.3 7.5", rate, per)
+	}
+	if out := frame(t, s.st, 120, 40); !strings.Contains(out, "dflash+ngram") || !strings.Contains(out, "30.0%") {
+		t.Errorf("combined drafters:\n%s", out)
+	}
+}
+
+// Rows only when the server drafts: never without the counters or with speculative.types "none"; without slot
+// params a server whose counters moved is shown as "draft".
+func TestSpecHidden(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		m       *mock
+		want    string // "" = no rows
+		samples bool
+	}{
+		{"no counters", &mock{metrics: metricsText(1), slots: slotsJSON(slotT("none", slot(0, true, 1, 900, 900, 0, 9, false)))}, "", false},
+		{"types none", &mock{metrics: specMetrics(1, 0, 0, 0), slots: slotsJSON(slotT("none", slot(0, true, 1, 900, 900, 0, 9, false)))}, "", false},
+		{"no slots, zero", &mock{noSlots: true, metrics: specMetrics(1, 0, 0, 0)}, "", false},
+		{"no slots, drafted", &mock{noSlots: true, metrics: specMetrics(1, 40, 100, 5)}, "draft ", false},
+		{"ngram, nothing drafted yet", &mock{metrics: specMetrics(1, 0, 0, 0), slots: slotsJSON(slotT("none,ngram-mod", slot(0, true, 1, 900, 900, 0, 9, false)))}, "ngram-mod ", false},
+	} {
+		srv := httptest.NewServer(c.m)
+		st := run(t, srv.URL, "", "", 6, nil)
+		srv.Close()
+		out := frame(t, st, 120, 40)
+		frame(t, st, 90, 40)
+		if got := strings.Contains(out, "tok/draft"); got != (c.want != "") || c.want != "" && !strings.Contains(out, c.want) {
+			t.Errorf("%s: want %q:\n%s", c.name, c.want, out)
+		}
+		if len(st.srv.Spec.Samples) > 0 != c.samples {
+			t.Errorf("%s: %d samples", c.name, len(st.srv.Spec.Samples))
+		}
+	}
+}
+
+func TestSpecPos(t *testing.T) {
+	mt := parseMetrics(strings.NewReader(readFixture(t, "metrics.txt")))
+	pos := specPos(mt)
+	if len(pos) != 64 || pos[0] != 699.0/745 || pos[63] != 143.0/745 {
+		t.Errorf("per position: %d %v", len(pos), pos)
+	}
+	if specPos(map[string]float64{specPosKey + ".0": 3}) != nil {
+		t.Error("per position without drafts")
+	}
+}

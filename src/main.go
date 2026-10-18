@@ -553,13 +553,70 @@ func gauge(segs []seg, total, w int) string {
 
 var blocks = []rune(" ▁▂▃▄▅▆▇█")
 
-func sparkline(v []float64, w int, c color.Color) string {
+// specRows are THROUGHPUT's speculative decoding rows: the drafter, acceptance over the last polls that drafted
+// (sparkline per poll, bright) and since server start ("all"), accepted tokens per draft and, if there is room,
+// the share of drafts accepted at each position. None when the server does not draft.
+func specRows(srv *serverState, ri int) []string {
+	mt := srv.Metrics
+	tok, ok := mt["spec_decode_num_draft_tokens_total"]
+	if !ok {
+		return nil
+	}
+	name, known := "", false
+	if srv.HaveSlots && srv.Kind != "lmstudio" {
+		name, known = drafters(srv.Slot.Params.SpecTypes)
+	}
+	if known && name == "" || !known && tok <= 0 {
+		return nil
+	}
+	if name == "" {
+		name = "draft"
+	}
+	if len(name) > 13 {
+		name = name[:12] + "…"
+	}
+	pct := func(ok bool, x float64) string {
+		if !ok {
+			return "  —  "
+		}
+		return fmt.Sprintf("%4.1f%%", x*100)
+	}
+	acc, all := mt["spec_decode_num_accepted_tokens_total"], 0.0
+	if tok > 0 {
+		all = acc / tok
+	}
+	rate, per, rok := srv.Spec.recent()
+	sw := max(4, ri-32)
+	a := fmt.Sprintf("%-14s%s %s%s", name, sparkTo(srv.Spec.rates(), sw, 1, cPurple), fg(cPurple).Render(pct(rok, rate)),
+		fg(cMuted).Render(" · "+pct(tok > 0, all)+" all"))
+	perAll, pa := "—", "  — "
+	if d := mt["spec_decode_num_drafts_total"]; d > 0 {
+		perAll = fmt.Sprintf("%.1f", acc/d)
+	}
+	if rok && per > 0 {
+		pa = fmt.Sprintf("%4.1f", per)
+	}
+	b := fmt.Sprintf("%-14s%s%s", "tok/draft", fg(cPurple).Render(pa), fg(cMuted).Render(" · "+perAll+" all"))
+	if pos := specPos(mt); len(pos) > 0 {
+		if room := ri - lipgloss.Width(b) - 9; room >= 4 {
+			b += fg(cMuted).Render("  by pos ") + sparkTo(pos[:min(len(pos), room)], min(len(pos), room), 1, cPurple)
+		}
+	}
+	return []string{a, b}
+}
+
+func sparkline(v []float64, w int, c color.Color) string { return sparkTo(v, w, 0, c) }
+
+// sparkTo draws against a fixed top value mx (0: the largest value shown).
+func sparkTo(v []float64, w int, mx float64, c color.Color) string {
+	w = max(w, 0)
 	if len(v) > w {
 		v = v[len(v)-w:]
 	}
-	mx := 0.0
-	for _, x := range v {
-		mx = math.Max(mx, x)
+	if mx <= 0 {
+		for _, x := range v {
+			mx = math.Max(mx, x)
+		}
 	}
 	var sb strings.Builder
 	sb.WriteString(strings.Repeat(" ", max(0, w-len(v))))
@@ -1206,11 +1263,7 @@ func (m model) render() string {
 			reuse = cached / (cached + read)
 		}
 		thr = append(thr, fmt.Sprintf("%-14s%s %s", "cache reuse", gauge([]seg{{int(reuse * 1000), cBlue, "█"}}, 1000, max(6, ri-21)), fg(cBlue).Render(fmt.Sprintf("%4.1f%%", reuse*100))))
-		acc := 0.0
-		if d := mt["spec_decode_num_draft_tokens_total"]; d > 0 {
-			acc = mt["spec_decode_num_accepted_tokens_total"] / d
-		}
-		thr = append(thr, fmt.Sprintf("%-14s%s %s", "ngram accept", gauge([]seg{{int(acc * 1000), cPurple, "█"}}, 1000, max(6, ri-21)), fg(cPurple).Render(fmt.Sprintf("%4.1f%%", acc*100))))
+		thr = append(thr, specRows(srv, ri)...)
 		thr = append(thr, fg(cMuted).Render(fmt.Sprintf("since start: %s read · %s reused · %s written",
 			kTok(int(read)), kTok(int(cached)), kTok(int(mt["tokens_predicted_total"])))))
 		avgR, avgW := 0.0, 0.0

@@ -33,7 +33,8 @@ type slotJSON struct {
 	NCache     int             `json:"n_prompt_tokens_cache"`
 	Next       json.RawMessage `json:"next_token"`
 	Params     struct {
-		NPredict int `json:"n_predict"`
+		NPredict  int    `json:"n_predict"`
+		SpecTypes string `json:"speculative.types"` // "none,ngram-mod"; /props always says "none"
 	} `json:"params"`
 }
 
@@ -148,6 +149,7 @@ type serverState struct {
 	curRead, curGen float64
 	prev            map[int]slotPrev
 	busySince       time.Time
+	Spec            specHist
 
 	Info modelInfo  // LM Studio's model details
 	Done []reqEvent // finished requests since llm-top started, oldest first
@@ -540,6 +542,7 @@ func (s *serverState) apply(p probe) {
 	if !s.Up {
 		s.HaveSlots, s.Busy, s.Auth, s.Sleeping = false, 0, false, false
 		s.Metrics, s.prev, s.LM.Phase, s.Slot.Processing = nil, nil, "", false
+		s.Spec = specHist{}
 		s.ReadRate.push(0, 240)
 		s.GenRate.push(0, 240)
 		s.curRead, s.curGen = 0, 0
@@ -548,6 +551,7 @@ func (s *serverState) apply(p probe) {
 	s.Router, s.RouterNote = p.Router, p.Note
 	if s.Router && s.Model != p.Target {
 		s.Model, s.Props, s.Metrics, s.HaveSlots, s.prev = p.Target, propsJSON{}, nil, false, nil
+		s.Spec = specHist{}
 	}
 	if p.PropsCode == http.StatusOK {
 		s.Props = p.Props
@@ -555,6 +559,7 @@ func (s *serverState) apply(p probe) {
 	}
 	if p.MetricsCode == http.StatusOK {
 		s.Metrics = p.Metrics
+		s.Spec.add(p.Metrics)
 	} else if p.MetricsCode != 0 {
 		s.Metrics = nil
 	}
@@ -673,7 +678,17 @@ func parseMetrics(r io.Reader) map[string]float64 {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		l := sc.Text()
-		if strings.HasPrefix(l, "#") || strings.Contains(l, "{") {
+		if strings.HasPrefix(l, "#") {
+			continue
+		}
+		if i := strings.Index(l, "{"); i >= 0 { // only the per-position acceptance, kept as "name.N"
+			pos, ok := strings.CutPrefix(l[i:], `{position="`)
+			n, v, ok2 := strings.Cut(pos, `"}`)
+			if f := strings.Fields(v); ok && ok2 && len(f) == 1 && strings.TrimPrefix(l[:i], "llamacpp:") == specPosKey {
+				if x, err := strconv.ParseFloat(f[0], 64); err == nil {
+					m[specPosKey+"."+n] = x
+				}
+			}
 			continue
 		}
 		f := strings.Fields(l)
@@ -735,4 +750,117 @@ func (s *serverState) applyLM(p probe) {
 	}
 	s.ReadRate.push(0, 240)
 	s.GenRate.push(s.curGen, 240)
+}
+
+// ---------- speculative decoding ----------
+
+const specPosKey = "spec_decode_num_accepted_tokens_per_pos_total"
+
+// specWindow is how many polls that drafted count as "recent": ~60 s while drafting all the time.
+const specWindow = 120
+
+type specSample struct{ acc, tok, drafts float64 }
+
+// specHist keeps the spec_decode counters' deltas between polls that drafted.
+type specHist struct {
+	prev    [3]float64 // accepted, draft tokens, drafts at the last scrape
+	seen    bool
+	Samples []specSample // oldest first, at most specWindow
+}
+
+func specCounters(mt map[string]float64) [3]float64 {
+	return [3]float64{mt["spec_decode_num_accepted_tokens_total"], mt["spec_decode_num_draft_tokens_total"], mt["spec_decode_num_drafts_total"]}
+}
+
+func (h *specHist) add(mt map[string]float64) {
+	if _, ok := mt["spec_decode_num_draft_tokens_total"]; !ok {
+		*h = specHist{}
+		return
+	}
+	c := specCounters(mt)
+	if c[0] < h.prev[0] || c[1] < h.prev[1] || c[2] < h.prev[2] { // the server restarted: older samples are another run
+		h.Samples, h.seen = nil, false
+	}
+	if h.seen {
+		// counters print with 6 significant digits (%g): deltas of large ones are coarse, so keep them consistent
+		d := specSample{acc: max(0, c[0]-h.prev[0]), tok: c[1] - h.prev[1], drafts: max(0, c[2]-h.prev[2])}
+		if d.tok > 0 {
+			d.acc = min(d.acc, d.tok)
+			h.Samples = append(h.Samples, d)
+			if len(h.Samples) > specWindow {
+				h.Samples = h.Samples[len(h.Samples)-specWindow:]
+			}
+		}
+	}
+	h.prev, h.seen = c, true
+}
+
+// recent is the acceptance rate and accepted tokens per draft over the window (ok false without samples).
+func (h *specHist) recent() (rate, perDraft float64, ok bool) {
+	var a, t, d float64
+	for _, x := range h.Samples {
+		a, t, d = a+x.acc, t+x.tok, d+x.drafts
+	}
+	if t <= 0 {
+		return 0, 0, false
+	}
+	if d > 0 {
+		perDraft = a / d
+	}
+	return a / t, perDraft, true
+}
+
+// rates is the acceptance rate of each sample, for the sparkline.
+func (h *specHist) rates() []float64 {
+	v := make([]float64, len(h.Samples))
+	for i, x := range h.Samples {
+		v[i] = x.acc / x.tok
+	}
+	return v
+}
+
+// specPos is the share of drafts whose token at each position was accepted, since server start.
+func specPos(mt map[string]float64) []float64 {
+	d := mt["spec_decode_num_drafts_total"]
+	if d <= 0 {
+		return nil
+	}
+	var v []float64
+	for i := 0; ; i++ {
+		x, ok := mt[specPosKey+"."+strconv.Itoa(i)]
+		if !ok {
+			break
+		}
+		v = append(v, min(1, x/d))
+	}
+	for len(v) > 0 && v[len(v)-1] == 0 {
+		v = v[:len(v)-1]
+	}
+	return v
+}
+
+// drafters names the speculative decoding from a slot's speculative.types: "none,ngram-mod" is "ngram-mod",
+// "draft-dflash,ngram-mod" is "dflash+ngram". known is false for an empty string; "" with known means none.
+func drafters(types string) (name string, known bool) {
+	types = strings.TrimSpace(types)
+	if types == "" {
+		return "", false
+	}
+	var ts []string
+	for _, t := range strings.Split(types, ",") {
+		if t = strings.TrimSpace(t); t != "" && t != "none" {
+			ts = append(ts, strings.TrimPrefix(t, "draft-"))
+		}
+	}
+	if len(ts) == 1 {
+		return ts[0], true
+	}
+	var short []string
+	for _, t := range ts {
+		t, _, _ = strings.Cut(t, "-")
+		if !slices.Contains(short, t) {
+			short = append(short, t)
+		}
+	}
+	return strings.Join(short, "+"), true
 }

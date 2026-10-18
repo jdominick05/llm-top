@@ -102,11 +102,28 @@ llm-top -version
 |---|---|
 | **Header** | alias, model, address, and the state: `IDLE` `READING` `WRITING` `✂ COMPACTING` `BUSY` `LOADING` `SLEEP` `AUTH` `ROUTER` `NO MODEL` `DOWN` `HOLD` |
 | **CONTEXT** | context window fill (reused / read / written), what fills it for the selected session (est.), prompt size per request |
-| **THROUGHPUT** | read / write tok/s, cache reuse, n-gram draft acceptance, totals since start, fallbacks and the bottleneck verdict |
+| **THROUGHPUT** | read / write tok/s, cache reuse, speculative decoding (see below), totals since start, fallbacks and the bottleneck verdict |
 | **SAVINGS** | API cost of the same tokens minus GPU electricity, all time and today |
 | **MACHINE** | VRAM, RAM, the inference process's memory |
 | **AGENTS** | Qwen Code sessions of the last 6 hours and what the selected one is doing |
 | **ACTIVITY** | prompts, tool calls with duration and result, replies, compactions |
+
+## Speculative decoding
+
+With `--spec-type` (and `--metrics`) THROUGHPUT gets two rows, named after the drafter(s) in the slot's
+`speculative.types` (`ngram-mod`, `dflash`, `dflash+ngram` for `draft-dflash,ngram-mod`; plain `draft` when
+`/slots` is off or not read yet):
+
+```
+ngram-mod     ▄▅▆▇▇▇▆▆▅▄▃▂▁▁▁▁ 47.9% · 43.6% all
+tok/draft      2.6 · 2.5 all  by pos ▇▇▆▆▅▅▅▄▄▄▃
+```
+
+The first row is the share of drafted tokens the model accepted: the sparkline per poll and the bright number
+over the last 120 polls that drafted (about a minute when it drafts all the time; polls without drafts don't
+count), then since server start (`all`). The second is accepted tokens per draft, recent and since start, and,
+if there is room, the share of drafts accepted at each draft position since start. Both rows are hidden when the
+server does not draft (no counters, or `speculative.types` is `none`).
 
 ## The bottleneck line
 
@@ -130,7 +147,7 @@ whatever holds more than 1 GB of VRAM. A `?` after the name means it was guessed
 | Started with | What llm-top does |
 |---|---|
 | defaults | full view; `/slots` is only polled while a request runs (see below) |
-| `--metrics` | adds totals, cache reuse, n-gram acceptance and real speeds for savings; lets llm-top skip `/slots` while idle |
+| `--metrics` | adds totals, cache reuse, draft acceptance and real speeds for savings; lets llm-top skip `/slots` while idle |
 | `--no-slots` | `BUSY` / `IDLE` from `/metrics` only, no live progress |
 | `--api-key` / `--api-key-file` | set `api_key` in the config or `LLAMA_API_KEY`; `AUTH` when it is missing or wrong |
 | `-np N` (several slots) | shows the busy slot (`slot id 2 · 4 slots, 2 busy`), throughput summed over all slots |

@@ -15,8 +15,8 @@ machine-specific belongs in the code or the committed files.
 | `/health` | `server_url` (default `http://127.0.0.1:<port from server_config>`, else 8080) | 500 ms |
 | `/props` | n_ctx, total_slots, alias, model path, `is_sleeping` | 2 s |
 | `/models` | router-mode detection (entries with `status`) | 10 s |
-| `/metrics` | Prometheus text, `llamacpp:` prefix stripped; `requests_processing` or moved token counters = busy | 500 ms (5 s retry when off) |
-| `/slots` | only while busy (or every round without `--metrics`), plus once at startup | 500 ms |
+| `/metrics` | Prometheus text, `llamacpp:` prefix stripped; `requests_processing` or moved token counters = busy; labelled series skipped except `spec_decode_num_accepted_tokens_per_pos_total` (kept as `name.N`); `specHist` keeps per-poll `spec_decode_*` deltas | 500 ms (5 s retry when off) |
+| `/slots` | only while busy (or every round without `--metrics`), plus once at startup; `params["speculative.types"]` names the drafter (`/props` always says `none`) | 500 ms |
 | Qwen Code logs | `sessions_dir/*/chats/*.jsonl`, tailed by byte offset; last 6 h, newest 6 | 1.5 s |
 | Savings ledger | the same `.jsonl` files, all of them, only `usageMetadata` lines | 10 s |
 | LM Studio | `/api/v1/models` (liveness, loaded instance, context_length) | 2 s |
@@ -46,13 +46,14 @@ build and test with `./src` or `./...` from the root.
 - `lmstudio.go`: `pickLM` (models JSON), `lmLog.tail` + `lmState.line` (log state machine; anchored at column 0
   so request bodies, i.e. the user's chats, never match). `srvClient.detect` tells the backends apart,
   `lmRound` / `applyLM` in server.go. Auto mode tries `:8080` then `:1234`, rotating while nothing answers.
+- `specRows` (main.go) / `specHist`, `drafters`, `specPos` (server.go): the speculative decoding rows in THROUGHPUT.
 - `bottleneck.go`: `bottleneck()` (pure verdict, thresholds as consts) and `fallbackRows()` for THROUGHPUT.
 - `sys.go`: `probeSys` switches on `runtime.GOOS`; parsers (`parseWinProbe`, `probeLinux`, `parseNvidiaSmi`) are
   plain functions so tests run on any OS. No build tags.
 - `config.go`: `config` (embeds `priceCfg`), lookup order, `rel()` path resolution, `server()`.
 - `savings.go`: `priceCfg` defaults, the per-day token `ledger` (`update`), `cost`.
 - Tests: `server_test.go` (mock llama-server per setup: idle, busy, no metrics, `--no-slots`, api key,
-  loading/down, multi-slot, router, sleeping), `sys_test.go` (fake /proc + /sys), `config_test.go`,
+  loading/down, multi-slot, router, sleeping, speculative decoding), `sys_test.go` (fake /proc + /sys), `config_test.go`,
   `session_test.go`, `lmstudio_test.go` (log states, rotation, mock LM Studio, candidates), `bottleneck_test.go`. `frame()` renders and fails on any line wider than the terminal. `testdata/` holds real
   `/slots`, `/metrics`, `/props` captures (anonymized).
 - Panels: CONTEXT (left), THROUGHPUT, SAVINGS, MACHINE, AGENTS (right), ACTIVITY (full width, fills the rest).

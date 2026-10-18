@@ -82,12 +82,20 @@ func demoState(t *testing.T) *state {
 		Props: propsJSON{Alias: "qwen3-coder"},
 		Metrics: map[string]float64{"prompt_tokens_total": 9_820_000, "prompt_tokens_cached_total": 131_400_000,
 			"prompt_seconds_total": 3950, "tokens_predicted_total": 1_630_000, "tokens_predicted_seconds_total": 21_400,
-			"spec_decode_num_draft_tokens_total": 920_000, "spec_decode_num_accepted_tokens_total": 401_000, "n_tokens_max": 118_000}}
+			"spec_decode_num_draft_tokens_total": 920_000, "spec_decode_num_accepted_tokens_total": 401_000, "spec_decode_num_drafts_total": 160_000,
+			"n_tokens_max": 118_000}}
+	st.srv.Slot.Params.SpecTypes = "none,ngram-mod"
+	for i := 0; i < 64; i++ {
+		st.srv.Metrics[specPosKey+"."+strconv.Itoa(i)] = 160_000 * 0.9 * math.Pow(0.93, float64(i))
+	}
 	// some history in the sparklines
 	for i := 0; i < 160; i++ {
 		x := float64(i)
 		st.srv.ReadRate.push(math.Max(0, 2600*math.Sin(x/7))*float64(i%23/18), 240)
 		st.srv.GenRate.push(math.Max(0, 74+8*math.Sin(x/3))*float64(i%23/13%2), 240)
+		if i%3 == 0 {
+			st.srv.Spec.Samples = append(st.srv.Spec.Samples, specSample{acc: 30 + 25*math.Sin(x/9), tok: 64, drafts: 12})
+		}
 	}
 	return st
 }
