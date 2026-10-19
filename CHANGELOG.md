@@ -17,6 +17,9 @@
 - Fixed: in router mode llm-top could keep asking about a model for up to 10 s after the router unloaded it (with
   autoload that could load it back), and moving to a sleeping model could send it a `/slots` request that woke it.
   `/models` is now read every round in router mode, and a new target starts with no carried-over state.
+- Fixed: the frame could be taller than the terminal (always below 110 columns, and on short terminals), pushing
+  the header out of view. Panels now give up rows to fit, least-used first (SAVINGS, MACHINE, the older parts of
+  CONTEXT, the AGENTS list), whole sections at a time; the AGENTS "now" line and the context gauge stay longest.
 
 ## 0.2.0 - 2026-10-17
 

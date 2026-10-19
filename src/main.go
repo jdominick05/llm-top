@@ -522,6 +522,91 @@ func panel(title string, accent color.Color, w int, body []string) string {
 	return strings.Join(lines, "\n")
 }
 
+// box is a panel before layout: render() takes rows off the boxes until the frame fits the terminal's height.
+type box struct {
+	title string
+	c     color.Color
+	w     int
+	rows  []string
+	keep  int // rows at the end that go last (AGENTS' "now" line)
+	min   int // rows that stay while other boxes can still give some up
+}
+
+func (b *box) height() int {
+	if len(b.rows) == 0 {
+		return 0
+	}
+	return len(b.rows) + 2
+}
+
+// cut takes up to k lines off the box and leaves at least floor rows: rows before the kept tail go first, a
+// section (rows between blank lines) whole rather than half, then the tail; a box left without rows goes away
+// with its border. It returns the lines taken, which can be more than k.
+func (b *box) cut(k, floor int) int {
+	h := b.height()
+	if k <= 0 || h == 0 || len(b.rows) <= floor {
+		return 0
+	}
+	if floor == 0 && k >= h-2 { // nothing worth a border would be left
+		b.rows = nil
+		return h
+	}
+	nk := min(b.keep, len(b.rows))
+	head, tail := b.rows[:len(b.rows)-nk], b.rows[len(b.rows)-nk:]
+	d := min(k, len(head), len(b.rows)-floor)
+	if d > 0 && d < len(head) && head[len(head)-d] != "" { // the cut splits a section: take all of it
+		for i := len(head) - d - 1; i >= floor; i-- {
+			if head[i] == "" {
+				d = len(head) - i
+				break
+			}
+		}
+	}
+	head = head[:len(head)-d]
+	tail = tail[min(len(tail), max(0, k-d), max(0, len(head)+len(tail)-floor)):]
+	if len(tail) > 0 && tail[0] == "" && (len(head) == 0 || head[len(head)-1] == "") {
+		tail = tail[1:] // no blank line at the top or twice where rows were taken out
+	}
+	b.rows = append(append([]string(nil), head...), tail...)
+	for len(b.rows) > 0 && b.rows[len(b.rows)-1] == "" {
+		b.rows = b.rows[:len(b.rows)-1]
+	}
+	return h - b.height()
+}
+
+func (b *box) render() string {
+	if len(b.rows) == 0 {
+		return ""
+	}
+	return panel(b.title, b.c, b.w, b.rows)
+}
+
+// shrink cuts the boxes, in order, until they stack into room lines: first down to each box's min, then further.
+func shrink(room int, bs ...*box) {
+	over := -room
+	for _, b := range bs {
+		over += b.height()
+	}
+	for pass := 0; pass < 2; pass++ {
+		for _, b := range bs {
+			if over <= 0 {
+				return
+			}
+			over -= b.cut(over, b.min*(1-pass))
+		}
+	}
+}
+
+func joinBoxes(bs []*box) string {
+	var out []string
+	for _, b := range bs {
+		if r := b.render(); r != "" {
+			out = append(out, r)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 type seg struct {
 	n  int
 	c  color.Color
@@ -1244,7 +1329,7 @@ func (m model) render() string {
 		}
 		ctx = append(ctx, fg(cMuted).Render(msg))
 	}
-	ctxPanel := panel("CONTEXT", cAccent, lw, ctx)
+	ctxBox := &box{title: "CONTEXT", c: cAccent, w: lw, rows: ctx, min: 2} // the gauge and its legend
 
 	// ----- throughput panel -----
 	ri := rw - 4
@@ -1297,7 +1382,7 @@ func (m model) render() string {
 		thr = append(thr, "")
 		thr = append(thr, fb...)
 	}
-	thrPanel := panel("THROUGHPUT", cYellow, rw, thr)
+	thrBox := &box{title: "THROUGHPUT", c: cYellow, w: rw, rows: thr, min: 2}
 
 	// ----- machine panel -----
 	var mach []string
@@ -1339,7 +1424,7 @@ func (m model) render() string {
 	} else {
 		mach = append(mach, fg(cMuted).Render("reading counters…"))
 	}
-	machPanel := panel("MACHINE", cOrange, rw, mach)
+	machBox := &box{title: "MACHINE", c: cOrange, w: rw, rows: mach}
 
 	// ----- agents panel -----
 	var ag []string
@@ -1380,7 +1465,8 @@ func (m model) render() string {
 	if st.lights != nil {
 		ag = append(ag, fg(cMuted).Render("rgb  "+st.lights.Status()))
 	}
-	agPanel := panel("AGENTS  (tab = switch)", cGreen, rw, ag)
+	agBox := &box{title: "AGENTS  (tab = switch)", c: cGreen, w: rw, rows: ag, keep: len(ag) - len(st.sessions)} // the list goes first
+	agBox.min = agBox.keep
 
 	// ----- savings panel -----
 	var sv []string
@@ -1420,24 +1506,40 @@ func (m model) render() string {
 	} else {
 		sv = append(sv, fg(cMuted).Render("adding up session logs…"))
 	}
-	savPanel := panel("SAVINGS  (vs API · llm-top.json)", cGreen, rw, sv)
+	savBox := &box{title: "SAVINGS  (vs API · llm-top.json)", c: cGreen, w: rw, rows: sv}
 
 	// ----- assemble -----
-	var body string
-	if twoCol {
-		right := lipgloss.JoinVertical(lipgloss.Left, thrPanel, savPanel, machPanel, agPanel)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, ctxPanel, " ", right)
-	} else {
-		body = lipgloss.JoinVertical(lipgloss.Left, ctxPanel, thrPanel, savPanel, machPanel, agPanel)
-	}
-
-	// ----- activity feed fills the rest -----
+	// header, status line, ACTIVITY's border and the footer take 5 lines and ACTIVITY at least 3: the panels get
+	// the rest, giving up rows in order of least use (the left column on its own in two-column mode)
 	H := m.h
 	if H <= 0 {
 		H = 50
 	}
-	used2 := 2 + lipgloss.Height(body) + 2 + 1
-	n := max(3, H-used2)
+	room = H - 5 - 3
+	var body string
+	if twoCol {
+		ctxBox.cut(ctxBox.height()-room, 0)
+		shrink(room, savBox, machBox, agBox, thrBox)
+		left, right := ctxBox.render(), joinBoxes([]*box{thrBox, savBox, machBox, agBox})
+		switch {
+		case left == "":
+			body = right
+		case right == "":
+			body = left
+		default:
+			body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+		}
+	} else {
+		shrink(room, savBox, machBox, ctxBox, agBox, thrBox)
+		body = joinBoxes([]*box{ctxBox, thrBox, savBox, machBox, agBox})
+	}
+
+	// ----- activity feed fills the rest -----
+	bodyH := 0
+	if body != "" {
+		bodyH = lipgloss.Height(body)
+	}
+	n := max(3, H-5-bodyH)
 	var feed []string
 	if sess != nil {
 		evs := sess.events
@@ -1485,7 +1587,14 @@ func (m model) render() string {
 	feedPanel := panel(feedTitle, cTeal, W, feed)
 
 	foot := fg(cDim).Render(ansi.Truncate(" tab switch agent · q quit · composition is estimated from session text since the last compaction", W, "…"))
-	out := strings.Join([]string{header, statusLine, body, feedPanel, foot}, "\n")
+	parts := []string{header, statusLine, body, feedPanel, foot}
+	if body == "" {
+		parts = []string{header, statusLine, feedPanel, foot}
+	}
+	out := strings.Join(parts, "\n")
+	if ls := strings.Split(out, "\n"); len(ls) > H { // a terminal too short for even 3 rows of ACTIVITY
+		out = strings.Join(ls[:H], "\n")
+	}
 	if realW < W {
 		ls := strings.Split(out, "\n")
 		for i, l := range ls {

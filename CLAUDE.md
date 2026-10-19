@@ -66,7 +66,9 @@ build and test with `./src` or `./...` from the root.
   `session_test.go`, `lmstudio_test.go` (log states, rotation, mock LM Studio, candidates), `bottleneck_test.go`. `frame()` renders and fails on any line wider than the terminal. `testdata/` holds real
   `/slots`, `/metrics`, `/props` captures (anonymized).
 - Panels: CONTEXT (left), THROUGHPUT, SAVINGS, MACHINE, AGENTS (right), ACTIVITY (full width, fills the rest).
-  Below 110 columns everything stacks.
+  Below 110 columns everything stacks. The frame never exceeds the terminal height: panels are `box`es that
+  `shrink()` trims (SAVINGS, MACHINE, CONTEXT, AGENTS list, THROUGHPUT, each down to its `min` first) before
+  ACTIVITY drops below 3 rows; `frame()` in tests fails on too many lines as well as too wide ones.
 - `install.ps1` / `install.sh` (oneshot installers), `release.ps1`, `.github/workflows/{ci,release}.yml`.
 
 All pollers write into `state` under `st.mu`; `render()` holds the lock for the whole frame. Session files are

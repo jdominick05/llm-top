@@ -176,6 +176,9 @@ func run(t *testing.T, url, key, want string, rounds int, step func(i int)) *sta
 func frame(t *testing.T, st *state, w, h int) string {
 	t.Helper()
 	out := model{st: st, w: w, h: h}.render()
+	if n := strings.Count(out, "\n") + 1; h > 0 && n > h {
+		t.Errorf("%dx%d: %d lines", w, h, n)
+	}
 	for i, l := range strings.Split(out, "\n") {
 		if lw := lipgloss.Width(l); lw > w {
 			t.Errorf("%dx%d: line %d is %d wide: %q", w, h, i, lw, ansi.Strip(l))

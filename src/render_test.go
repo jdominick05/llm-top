@@ -44,6 +44,40 @@ func TestRenderAllSizes(t *testing.T) {
 	}
 }
 
+func TestBoxCut(t *testing.T) {
+	rows := func(b *box) string { return strings.Join(b.rows, "|") }
+	// a whole section goes rather than half of one, and no blank line is left at the end
+	b := &box{rows: []string{"gauge", "legend", "", "waffle1", "waffle2", "waffle3"}}
+	if n := b.cut(1, 0); n != 4 || rows(b) != "gauge|legend" {
+		t.Errorf("section cut: took %d, left %q", n, rows(b))
+	}
+	// floor: rows that stay; the section rule never goes below it
+	b = &box{rows: []string{"gauge", "legend", "", "a", "b"}}
+	if b.cut(10, 2); rows(b) != "gauge|legend" {
+		t.Errorf("floor 2: left %q", rows(b))
+	}
+	// the kept tail stays while the list shrinks; the blank line before it isn't doubled
+	b = &box{rows: []string{"s1", "s2", "s3", "", "now"}, keep: 2}
+	if b.cut(2, 0); rows(b) != "s1||now" {
+		t.Errorf("keep: left %q", rows(b))
+	}
+	b = &box{rows: []string{"s1", "", "now"}, keep: 2}
+	if b.cut(1, 0); rows(b) != "now" {
+		t.Errorf("list gone: left %q", rows(b))
+	}
+	// cutting everything takes the border too
+	b = &box{rows: []string{"x", "y"}}
+	if n := b.cut(2, 0); n != 4 || b.height() != 0 || b.render() != "" {
+		t.Errorf("all: took %d, height %d", n, b.height())
+	}
+	// shrink honours min before cutting further, in order
+	a, c := &box{rows: []string{"1", "2", "3", "4"}, min: 1}, &box{rows: []string{"1", "2", "3", "4"}, min: 3}
+	shrink(8, a, c)
+	if rows(a) != "1" || len(c.rows) != 3 {
+		t.Errorf("shrink: %q %q", rows(a), rows(c))
+	}
+}
+
 func TestColumnsDegenerate(t *testing.T) {
 	for _, w := range []int{-3, 0, 1} {
 		for _, h := range []int{0, 1, 5} {
