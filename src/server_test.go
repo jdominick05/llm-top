@@ -34,7 +34,7 @@ type mock struct {
 	props     string
 
 	mu   sync.Mutex
-	hits map[string]int // path -> GETs; non-GETs are counted under "!"
+	hits map[string]int // path -> GETs; non-GETs are counted under "!"; "path?model" for router questions
 }
 
 func (m *mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +46,9 @@ func (m *mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.hits["!"]++
 	}
 	m.hits[r.URL.Path]++
+	if md := r.URL.Query().Get("model"); md != "" {
+		m.hits[r.URL.Path+"?"+md]++
+	}
 	m.mu.Unlock()
 	fail := func(code int, msg string) {
 		w.WriteHeader(code)
@@ -92,7 +95,11 @@ func (m *mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if p == "" {
 			p = `{"default_generation_settings":{"n_ctx":32768},"total_slots":1,"model_alias":"","model_path":"/m/tiny.gguf"}`
 		}
-		if m.sleeping {
+		asleep := m.sleeping
+		for _, md := range m.router {
+			asleep = asleep || md.id == r.URL.Query().Get("model") && md.status == "sleeping"
+		}
+		if asleep {
 			p = strings.Replace(p, `"total_slots"`, `"is_sleeping":true,"total_slots"`, 1)
 		}
 		fmt.Fprint(w, p)
@@ -395,6 +402,53 @@ func TestRouter(t *testing.T) {
 	}
 }
 
+// An evicted model is never asked about again: /models is read every round in router mode, so not one ?model=
+// question follows the round that saw it go (with autoload, one could load it back and evict the new one).
+func TestRouterEviction(t *testing.T) {
+	m := &mock{router: []mockModel{{"a", "loaded"}, {"b", "unloaded"}},
+		slots: slotsJSON(slot(0, false, 1, 50, 50, 0, 3, false)), metrics: metricsText(0)}
+	srv := httptest.NewServer(m)
+	defer srv.Close()
+	asked := func(md string) int { return m.count("/props?"+md) + m.count("/metrics?"+md) + m.count("/slots?"+md) }
+	var atFlip int
+	st := run(t, srv.URL, "", "", 20, func(i int) {
+		if i == 7 {
+			atFlip = asked("a")
+			m.router = []mockModel{{"a", "unloaded"}, {"b", "loaded"}}
+		}
+	})
+	if atFlip == 0 {
+		t.Fatal("a was never watched")
+	}
+	if n := asked("a"); n != atFlip {
+		t.Errorf("%d questions about a after it was unloaded", n-atFlip)
+	}
+	if h := header(t, st); !strings.Contains(h, "b") || asked("b") == 0 {
+		t.Errorf("did not move to b:\n%s", h)
+	}
+}
+
+// Moving to a model that sleeps never asks its /slots (that would wake it), and the old model's token counters
+// don't make the new one look busy.
+func TestRouterSwitchToSleeping(t *testing.T) {
+	m := &mock{router: []mockModel{{"a", "loaded"}, {"b", "sleeping"}},
+		slots: slotsJSON(slot(0, false, 1, 50, 50, 0, 3, false)), metrics: metricsText(0)}
+	srv := httptest.NewServer(m)
+	defer srv.Close()
+	run(t, srv.URL, "", "", 20, func(i int) {
+		if i == 7 {
+			m.router = []mockModel{{"a", "unloaded"}, {"b", "sleeping"}}
+			m.metrics = strings.Replace(metricsText(0), "tokens_predicted_total 500", "tokens_predicted_total 9500", 1) // b's counters differ from a's
+		}
+	})
+	if n := m.count("/slots?b"); n != 0 {
+		t.Errorf("%d /slots questions to the sleeping model", n)
+	}
+	if m.count("/metrics?b") == 0 {
+		t.Error("b was never watched")
+	}
+}
+
 func TestSleeping(t *testing.T) {
 	m := &mock{sleeping: true, slots: slotsJSON(slot(0, false, 1, 50, 50, 0, 3, false)), metrics: metricsText(0)}
 	srv := httptest.NewServer(m)
@@ -421,19 +475,21 @@ func TestUnknownContextSize(t *testing.T) {
 func TestRouterTarget(t *testing.T) {
 	cases := []struct {
 		body, want, target, note string
-		router                   bool
+		router, asleep           bool
 	}{
-		{`{"data":[{"id":"a","object":"model"}]}`, "", "", "", false},
-		{`{"data":[]}`, "", "", "", false},
-		{`not json`, "", "", "", false},
-		{`{"data":[{"id":"a","status":{"value":"loading"}},{"id":"b","status":{"value":"sleeping"}}]}`, "", "b", "", true},
-		{`{"data":[{"id":"a","status":{"value":"loaded"}}]}`, "x", "", "x not found", true},
-		{`{"data":[{"id":"a","status":{"value":"downloading"}}]}`, "", "", "no model loaded", true},
+		{`{"data":[{"id":"a","object":"model"}]}`, "", "", "", false, false},
+		{`{"data":[]}`, "", "", "", false, false},
+		{`not json`, "", "", "", false, false},
+		{`{"data":[{"id":"a","status":{"value":"loading"}},{"id":"b","status":{"value":"sleeping"}}]}`, "", "b", "", true, true},
+		{`{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"sleeping"}}]}`, "b", "b", "", true, true},
+		{`{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"sleeping"}}]}`, "", "a", "", true, false},
+		{`{"data":[{"id":"a","status":{"value":"loaded"}}]}`, "x", "", "x not found", true, false},
+		{`{"data":[{"id":"a","status":{"value":"downloading"}}]}`, "", "", "no model loaded", true, false},
 	}
 	for _, c := range cases {
-		r, tg, n := routerTarget([]byte(c.body), c.want)
-		if r != c.router || tg != c.target || n != c.note {
-			t.Errorf("%s want=%q: got %v %q %q", c.body, c.want, r, tg, n)
+		r, tg, n, a := routerTarget([]byte(c.body), c.want)
+		if r != c.router || tg != c.target || n != c.note || a != c.asleep {
+			t.Errorf("%s want=%q: got %v %q %q asleep=%v", c.body, c.want, r, tg, n, a)
 		}
 	}
 }

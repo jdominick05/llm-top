@@ -240,7 +240,7 @@ type srvClient struct {
 	lastMetrics            time.Time
 	metricsOK, slotsActive bool
 	sleeping               bool            // from the last /props
-	work                   float64         // token counters at the last scrape: a change means something ran
+	work                   float64         // token counters at the last scrape: a change means something ran; -1 = none yet
 	seen                   bool            // base has answered at least once
 	lmBusy                 bool            // LM Studio: the log showed a request at the last round
 	lmModel                string          // LM Studio: the model watched
@@ -427,10 +427,23 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 		c.lastModels, c.lastProps, c.slotsActive = time.Time{}, time.Time{}, true // look again once it is up
 		return p
 	}
-	if now.Sub(c.lastModels) >= 10*time.Second {
+	// a router is asked every round: a model can be evicted or fall asleep any time, and /models never loads or
+	// wakes one, while ?model= on an unloaded one could load it
+	if c.router || now.Sub(c.lastModels) >= 10*time.Second {
 		c.lastModels = now
-		if code, b := c.get("/models"); code == http.StatusOK {
-			c.router, c.target, c.note = routerTarget(b, c.want)
+		code, b := c.get("/models")
+		if code == http.StatusOK {
+			router, target, note, asleep := routerTarget(b, c.want)
+			if target != c.target { // another model: nothing measured on the old one applies; one idle look at it
+				c.work, c.slotsActive, c.lastProps = -1, true, time.Time{}
+			}
+			c.router, c.target, c.note = router, target, note
+			if router {
+				c.sleeping = asleep
+			}
+		} else if c.router {
+			p.Router, p.Target, p.Note = c.router, c.target, c.note
+			return p // no fresh list, no ?model= questions
 		}
 	}
 	p.Router, p.Target, p.Note = c.router, c.target, c.note
@@ -442,7 +455,7 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 		var b []byte
 		if p.PropsCode, b = c.get(c.q("/props")); p.PropsCode == http.StatusOK {
 			_ = json.Unmarshal(b, &p.Props)
-			c.sleeping = p.Props.Sleeping
+			c.sleeping = p.Props.Sleeping || c.router && c.sleeping // a router's /models said so this round
 		}
 	}
 	busy := c.slotsActive
@@ -454,7 +467,7 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 			mt := p.Metrics
 			work := mt["prompt_tokens_total"] + mt["prompt_tokens_cached_total"] + mt["tokens_predicted_total"]
 			// a request that came and went between two scrapes still gets one /slots look
-			busy = busy || mt["requests_processing"]+mt["requests_deferred"] > 0 || (c.metricsOK && work != c.work)
+			busy = busy || mt["requests_processing"]+mt["requests_deferred"] > 0 || (c.metricsOK && c.work >= 0 && work != c.work)
 			c.work = work
 		}
 		c.metricsOK = p.MetricsCode == http.StatusOK
@@ -479,7 +492,8 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 
 // routerTarget detects router mode (/models entries with a status) and picks the model to watch: router_model if
 // it is loaded, else the first loaded one. Unloaded models are never asked about, so nothing gets loaded.
-func routerTarget(b []byte, want string) (router bool, target, note string) {
+// asleep: the target's status is "sleeping".
+func routerTarget(b []byte, want string) (router bool, target, note string, asleep bool) {
 	var ml struct {
 		Data []struct {
 			ID     string `json:"id"`
@@ -489,34 +503,34 @@ func routerTarget(b []byte, want string) (router bool, target, note string) {
 		} `json:"data"`
 	}
 	if json.Unmarshal(b, &ml) != nil {
-		return false, "", ""
+		return false, "", "", false
 	}
 	first := ""
 	for _, m := range ml.Data {
 		if m.Status == nil {
-			return false, "", ""
+			return false, "", "", false
 		}
 		live := m.Status.Value == "loaded" || m.Status.Value == "sleeping"
 		if want != "" && m.ID == want {
 			if live {
-				return true, want, ""
+				return true, want, "", m.Status.Value == "sleeping"
 			}
-			return true, "", want + " is " + m.Status.Value
+			return true, "", want + " is " + m.Status.Value, false
 		}
 		if live && first == "" {
-			first = m.ID
+			first, asleep = m.ID, m.Status.Value == "sleeping"
 		}
 	}
 	if len(ml.Data) == 0 {
-		return false, "", ""
+		return false, "", "", false
 	}
 	if want != "" {
-		return true, "", want + " not found"
+		return true, "", want + " not found", false
 	}
 	if first == "" {
-		return true, "", "no model loaded"
+		return true, "", "no model loaded", false
 	}
-	return true, first, ""
+	return true, first, "", asleep
 }
 
 // ---------- state update ----------

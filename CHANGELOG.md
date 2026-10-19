@@ -14,6 +14,9 @@
 - OpenRGB lighting, off by default (`"openrgb": {"enabled": true}`): RGB devices in Direct mode show the agent's
   phase (writing, reading, tool, waiting for you, ...) through OpenRGB's SDK server, with per-phase colors in the
   config; their colors are restored on exit. An `rgb` line in AGENTS shows the connection.
+- Fixed: in router mode llm-top could keep asking about a model for up to 10 s after the router unloaded it (with
+  autoload that could load it back), and moving to a sleeping model could send it a `/slots` request that woke it.
+  `/models` is now read every round in router mode, and a new target starts with no carried-over state.
 
 ## 0.2.0 - 2026-10-17
 

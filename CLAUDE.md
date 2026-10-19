@@ -14,7 +14,7 @@ machine-specific belongs in the code or the committed files.
 |---|---|---|
 | `/health` | `server_url` (default `http://127.0.0.1:<port from server_config>`, else 8080) | 500 ms |
 | `/props` | n_ctx, total_slots, alias, model path, `is_sleeping` | 2 s |
-| `/models` | router-mode detection (entries with `status`) | 10 s |
+| `/models` | router-mode detection (entries with `status`); in router mode also the target and whether it sleeps, read before any `?model=` question | 10 s, every round in router mode |
 | `/metrics` | Prometheus text, `llamacpp:` prefix stripped; `requests_processing` or moved token counters = busy; labelled series skipped except `spec_decode_num_accepted_tokens_per_pos_total` (kept as `name.N`); `specHist` keeps per-poll `spec_decode_*` deltas | 500 ms (5 s retry when off) |
 | `/slots` | only while busy (or every round without `--metrics`), plus once at startup; `params["speculative.types"]` names the drafter (`/props` always says `none`) | 500 ms |
 | Qwen Code logs | `sessions_dir/*/chats/*.jsonl`, tailed by byte offset; last 6 h, newest 6 | 1.5 s |
