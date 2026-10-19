@@ -27,6 +27,10 @@
   shows the unscaled estimate until the next request reports a size. A session line appended within the same
   file-time tick as the one before is no longer missed (a tool stayed "running"), and sessions that left the last
   6 hours are forgotten instead of kept in memory for the life of the process.
+- Fixed (LM Studio): a chat in LM Studio's own window after a Qwen Code compaction showed as COMPACTING; a
+  generation running longer than 15 minutes at INFO verbosity went idle and was never listed in ACTIVITY (it now
+  still counts when its end is logged); two logs taking turns as the newest (two instances) were replayed from the
+  start on every switch.
 
 ## 0.2.0 - 2026-10-17
 

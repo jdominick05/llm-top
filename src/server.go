@@ -357,7 +357,7 @@ func (c *srvClient) detect() string {
 	return "llama.cpp"
 }
 
-// lmRound: /api/v1/models every 2 s (liveness, loaded instance, context length), the server log every round.
+// lmRound: /api/v1/models every lmModelsEvery (loaded instance, context length), the server log every round.
 // lmModelsEvery: LM Studio writes every API request into its server log, so the model list is asked rarely; in
 // between a TCP connect (not logged) says it is still there. A request starting asks at once (it may have loaded one).
 const lmModelsEvery = 10 * time.Second

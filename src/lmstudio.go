@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ type lmState struct {
 	Found     bool      // a log file exists
 	Started   time.Time // when the running (or last) request began
 	since     time.Time
+	stale     bool // the running request timed out: its "Finished" line, if it comes, still counts it
 }
 
 type lmLog struct {
@@ -121,6 +123,7 @@ type lmLog struct {
 	path string
 	off  int64
 	rest []byte
+	offs map[string]int64 // where reading stopped in the other logs: two LM Studio instances take turns as newest
 	st   lmState
 }
 
@@ -163,8 +166,22 @@ func (l *lmLog) tail(now time.Time) lmState {
 	skip, startup := false, l.path == ""
 	if newest != l.path {
 		first := l.path == ""
-		l.path, l.off, l.rest = newest, 0, nil
-		l.st.Phase = "" // LM Studio restarted (a new numbered log) or the day changed: no request carries over
+		if l.offs == nil {
+			l.offs = map[string]int64{}
+		}
+		if !first {
+			l.offs[l.path] = l.off - int64(len(l.rest)) // a cut line is read again when it comes back
+		}
+		for p := range l.offs {
+			if !slices.Contains(files, p) {
+				delete(l.offs, p)
+			}
+		}
+		off, seen := l.offs[newest]
+		l.path, l.off, l.rest = newest, off, nil
+		if !seen {
+			l.st.Phase = "" // LM Studio restarted (a new numbered log) or the day changed: no request carries over
+		}
 		if first && fi.Size() > lmBackfill {
 			l.off, skip = fi.Size()-lmBackfill, true // the first line is cut
 		}
@@ -196,8 +213,8 @@ func (l *lmLog) tail(now time.Time) lmState {
 			break
 		}
 	}
-	if l.st.Phase != "" && now.Sub(l.st.since) > 15*time.Minute { // missed the end of a request
-		l.st.Phase = ""
+	if l.st.Phase != "" && now.Sub(l.st.since) > 15*time.Minute { // missed the end of a request, or a long one
+		l.st.Phase, l.st.stale = "", true // at INFO verbosity nothing is logged while writing
 	}
 	if startup { // the backfill is only for a request that is running right now
 		l.st.clearStats()
@@ -254,15 +271,15 @@ func (s *lmState) line(raw string, now time.Time) {
 	}
 	start := func(ph string) {
 		if s.Phase == "" { // a new request: its numbers start from zero
-			s.Started, s.Prompt, s.ReadRate = now, 0, 0
+			s.Started, s.Prompt, s.ReadRate, s.stale = now, 0, 0, false
 		}
 		s.since = now // last sign of life: a long request with progress lines never goes stale
 		s.Phase = ph
 	}
 	switch {
 	case lmLaunch.MatchString(msg): // a slot takes a task: also LM Studio's own chat window, which logs no API lines
-		if s.Phase == "" {
-			s.Pct, s.Decoded, s.GenRate = 0, 0, 0
+		if s.Phase == "" { // a window chat logs no request body: no max_tokens of an earlier API request
+			s.Pct, s.Decoded, s.GenRate, s.MaxTokens = 0, 0, 0, 0
 		}
 		start("reading")
 	case msg == "Running chat completion" || len(msg) > 23 && msg[:23] == "Running chat completion":
@@ -290,13 +307,13 @@ func (s *lmState) line(raw string, now time.Time) {
 		s.Decoded, s.GenRate, s.Debug = atoi(m[1]), atof(m[2]), true
 	case lmStop.MatchString(msg): // the slot is released: the request is over (also for non-streamed ones)
 		s.Ctx, s.Debug = atoi(lmStop.FindStringSubmatch(msg)[1]), true
-		if s.Phase != "" {
-			s.Phase = ""
+		if s.Phase != "" || s.stale {
+			s.Phase, s.stale = "", false
 			s.Reqs++
 		}
 	case msg == "Finished streaming response":
-		if s.Phase != "" {
-			s.Phase = ""
+		if s.Phase != "" || s.stale {
+			s.Phase, s.stale = "", false
 			s.Reqs++
 		}
 	}

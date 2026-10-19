@@ -547,3 +547,84 @@ func TestLMChatContext(t *testing.T) {
 		t.Error("empty conversation parsed")
 	}
 }
+
+// A chat in LM Studio's own window after an API compaction isn't a compaction: its launch line clears max_tokens.
+func TestLMWindowChatAfterCompaction(t *testing.T) {
+	var s lmState
+	now := time.Now()
+	for _, l := range []string{
+		`[2026-10-17 12:00:01][DEBUG] Received request: POST to /v1/chat/completions with body  {`,
+		`  "max_tokens": 20000,`, `}`,
+		`[2026-10-17 12:00:01][INFO][qwen/qwen3-32b] Running chat completion on conversation with 80 messages.`,
+		`[2026-10-17 12:01:00][INFO][qwen/qwen3-32b] Finished streaming response`,
+	} {
+		s.line(l, now)
+	}
+	for _, l := range lmAppChat[:2] {
+		s.line(l, now)
+	}
+	st := serverState{Kind: "lmstudio", Up: true, LM: s}
+	st.Props.Gen.NCtx = 131072
+	if s.Phase != "reading" || s.MaxTokens != 0 || st.compacting() {
+		t.Errorf("window chat shown as a compaction: %+v", s)
+	}
+}
+
+// At INFO verbosity a long generation logs nothing: after 15 min it shows idle, but its "Finished" line still
+// counts the request, once.
+func TestLMLongGenerationStillCounted(t *testing.T) {
+	var info []string
+	for _, l := range lmRequest {
+		if strings.Contains(l, "][INFO][google") && !strings.Contains(l, "Finished") {
+			info = append(info, l)
+		}
+	}
+	p := filepath.Join(t.TempDir(), "2026-10", "2026-10-17.1.log")
+	write(t, p, "")
+	l := &lmLog{dir: filepath.Dir(filepath.Dir(p))}
+	now := time.Now()
+	l.tail(now)
+	f, _ := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(strings.Join(info, "\n") + "\n")
+	f.Close()
+	if st := l.tail(now); st.Phase != "writing" {
+		t.Fatalf("not writing: %+v", st)
+	}
+	if st := l.tail(now.Add(20 * time.Minute)); st.Phase != "" {
+		t.Fatalf("stale request kept busy: %+v", st)
+	}
+	f, _ = os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(lmRequest[16] + "\n" + lmRequest[16] + "\n")
+	f.Close()
+	if st := l.tail(now.Add(21 * time.Minute)); st.Reqs != 1 || st.Phase != "" {
+		t.Errorf("finished after the timeout: %d requests, phase %q", st.Reqs, st.Phase)
+	}
+}
+
+// Two logs taking turns as the newest (two LM Studio instances) are each read on from where they were, not
+// replayed from the start.
+func TestLMLogFilesTakingTurns(t *testing.T) {
+	d := t.TempDir()
+	a, b := filepath.Join(d, "2026-10", "2026-10-17.1.log"), filepath.Join(d, "2026-10", "2026-10-17.2.log")
+	full := strings.Join(lmRequest, "\n") + "\n"
+	write(t, a, full)
+	l := &lmLog{dir: d}
+	now := time.Now()
+	t0 := now.Add(-time.Minute)
+	os.Chtimes(a, t0, t0)
+	l.tail(now) // startup: a's history is not counted
+	write(t, b, full)
+	t1 := t0.Add(10 * time.Second)
+	os.Chtimes(b, t1, t1)
+	if st := l.tail(now); st.Reqs != 1 {
+		t.Fatalf("b's request: %d", st.Reqs)
+	}
+	f, _ := os.OpenFile(a, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(full)
+	f.Close()
+	t2 := t1.Add(10 * time.Second)
+	os.Chtimes(a, t2, t2)
+	if st := l.tail(now); st.Reqs != 2 {
+		t.Errorf("back on a: %d requests, want 2 (a's old request replayed?)", st.Reqs)
+	}
+}

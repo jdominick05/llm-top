@@ -19,9 +19,9 @@ machine-specific belongs in the code or the committed files.
 | `/slots` | only while busy (or every round without `--metrics`), plus once at startup; `params["speculative.types"]` names the drafter (`/props` always says `none`) | 500 ms |
 | Qwen Code logs | `sessions_dir/*/chats/*.jsonl`, tailed by byte offset; last 6 h, newest 6 | 1.5 s |
 | Savings ledger | the same `.jsonl` files, all of them, only `usageMetadata` lines | 10 s |
-| LM Studio | `/api/v1/models` (liveness, loaded instance, context_length) | 2 s |
+| LM Studio | `/api/v1/models` (loaded instance, context_length); in between a TCP connect (not logged) checks liveness | 10 s (`lmModelsEvery`), at once when a request starts |
 | LM Studio chats | newest `~/.lmstudio/conversations/**/*.conversation.json` (sizes per kind, `tokenCount`) | 2 s |
-| LM Studio log | newest `lmstudio_logs/*/*.log`, tailed by offset (256 KB backfill on start); status lines only | 500 ms |
+| LM Studio log | newest `lmstudio_logs/*/*.log`, tailed by offset (256 KB backfill on start, offsets kept per file); status lines only | 500 ms |
 | Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry, plus the NPU: PnP ComputeAccelerator, its compute-only adapter's engine and memory counters); Linux: `/proc`, amdgpu sysfs, `nvidia-smi` | 5 s |
 | `xrt-smi examine -r aie-partitions` | Windows, only when the probe found an NPU and `%SystemRoot%\System32\AMD\xrt-smi.exe` (or one on PATH) exists; text table parsed from stdout (its JSON needs `-o <file>`, which would break the write-nothing rule) | 5 s |
 | Hold file | `hold_file` (first line shown as HOLD) | 5 s |
