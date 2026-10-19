@@ -182,7 +182,9 @@ this order:
 3. `llm-top.json` next to the executable, if there is one
 4. `%APPDATA%\llm-top\llm-top.json` on Windows, `~/.config/llm-top/llm-top.json` on Linux
 
-A UTF-8 BOM is fine, missing fields keep their defaults, and relative paths resolve against the file's folder.
+A UTF-8 BOM is fine, missing fields keep their defaults, and relative paths resolve against the file's folder. A
+value of the wrong type (`"vram_gb": "24"`) keeps only that field at its default; a file that isn't JSON at all
+is left alone and the defaults are used. Either way the footer says what is wrong.
 
 <details>
 <summary><b>All fields</b></summary>

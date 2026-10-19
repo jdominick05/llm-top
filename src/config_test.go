@@ -75,6 +75,27 @@ func TestConfigBrokenIsKept(t *testing.T) {
 	}
 }
 
+// A value of the wrong type costs only that field: the rest of the file still counts, and the error names it.
+func TestConfigWrongTypeKeepsTheRest(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "llm-top.json")
+	write(t, p, `{"server_url":"http://gpu-box:9000","vram_gb":"24","api_key":"k","openrgb":{"enabled":"yes","host":"h:1"}}`)
+	c, err := loadConfig(p)
+	if err == nil || !strings.Contains(err.Error(), "vram_gb should be a number, not string") {
+		t.Errorf("error: %v", err)
+	}
+	if c.ServerURL != "http://gpu-box:9000" || c.APIKey != "k" || c.VramGB != 0 || c.OpenRGB.Host != "h:1" || c.OpenRGB.Enabled {
+		t.Errorf("fields lost or wrong: %+v", c)
+	}
+}
+
+func TestConfigErrorInFooter(t *testing.T) {
+	st := demoState(t)
+	st.cfgErr = "llm-top.json: vram_gb should be a number, not string (using its default)"
+	if out := frame(t, st, 120, 50); !strings.Contains(out, "config: llm-top.json: vram_gb should be a number") {
+		t.Errorf("no config error in the footer:\n%s", out)
+	}
+}
+
 func TestServerFromServerConfig(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "llm-top.json")

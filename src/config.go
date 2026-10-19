@@ -12,9 +12,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -89,11 +91,30 @@ func loadConfig(path string) (config, error) {
 		return c, err
 	}
 	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &c); err != nil {
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) { // the decoder read every other field: only that one keeps its default
+			return c, fmt.Errorf("%s: %s should be %s, not %s (using its default)", path, te.Field, jsonKind(te.Type), te.Value)
+		}
 		c = defaultConfig
 		c.path = path
 		return c, fmt.Errorf("%s: %v (using defaults)", path, err)
 	}
 	return c, nil
+}
+
+// jsonKind names what a config field takes, in JSON's words.
+func jsonKind(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Slice, reflect.Array:
+		return "a list"
+	case reflect.Struct, reflect.Map:
+		return "an object"
+	}
+	return "a number"
 }
 
 // rel resolves a path from the config against the config file's directory; "~/" means the home dir.

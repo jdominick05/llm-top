@@ -20,6 +20,9 @@
 - Fixed: the frame could be taller than the terminal (always below 110 columns, and on short terminals), pushing
   the header out of view. Panels now give up rows to fit, least-used first (SAVINGS, MACHINE, the older parts of
   CONTEXT, the AGENTS list), whole sections at a time; the AGENTS "now" line and the context gauge stay longest.
+- Fixed: one config value of the wrong type (`"vram_gb": "24"`) threw the whole file away, server URL and API key
+  included. Now only that field keeps its default. Config errors show in the footer instead of on stderr, which the
+  full-screen view hid.
 
 ## 0.2.0 - 2026-10-17
 

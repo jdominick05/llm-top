@@ -399,6 +399,7 @@ type state struct {
 	sav      savingsState
 	lmChat   *session   // LM Studio's newest conversation (sizes only), for CONTEXT when no agent is active
 	lights   *rgbLights // OpenRGB, nil unless enabled; set before the TUI starts
+	cfgErr   string     // what was wrong with the config file, shown in the footer
 }
 
 func (st *state) pollSessions(glob string) {
@@ -1587,6 +1588,9 @@ func (m model) render() string {
 	feedPanel := panel(feedTitle, cTeal, W, feed)
 
 	foot := fg(cDim).Render(ansi.Truncate(" tab switch agent · q quit · composition is estimated from session text since the last compaction", W, "…"))
+	if st.cfgErr != "" { // stderr is gone behind the alternate screen
+		foot = fg(cRed).Render(ansi.Truncate(" config: "+st.cfgErr, W, "…"))
+	}
 	parts := []string{header, statusLine, body, feedPanel, foot}
 	if body == "" {
 		parts = []string{header, statusLine, feedPanel, foot}
@@ -1719,6 +1723,9 @@ func main() {
 		cfg.VramGB = v
 	}
 	st := &state{cfg: cfg, known: map[string]*session{}}
+	if err != nil {
+		st.cfgErr = err.Error()
+	}
 	st.bases, st.alias, st.model = cfg.server()
 	glob := cfg.sessionsGlob()
 	sc := newClient(st.bases, cfg.apiKeys(), cfg.RouterModel, cfg.Backend, cfg.lmLogs())
