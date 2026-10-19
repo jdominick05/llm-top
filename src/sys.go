@@ -49,6 +49,8 @@ type sysState struct {
 	Cores     float64  // CPU cores the process used since the last probe, -1 = unknown
 	Listen    []string // addresses the process listens on ("127.0.0.1:8091"): finds a server on another port
 	pageInRaw float64  // Linux: pswpin at this probe
+
+	NPU npuState // Windows only; NPU.Name "" = no NPU
 }
 
 const gib = 1 << 30
@@ -105,6 +107,22 @@ if ($best) {
   $nm=$best.ProcessName; if (eng $best) { $nm='LM Studio' }
   foreach ($c in Get-NetTCPConnection -State Listen -OwningProcess $best.Id) { [Console]::Out.WriteLine('listen '+$c.LocalAddress+' '+$c.LocalPort) }
   [Console]::Out.WriteLine('name '+$nm)
+}
+$npu=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='ComputeAccelerator'" | Select-Object -First 1
+if ($npu) {
+  [Console]::Out.WriteLine('npu_name '+$npu.Name)
+  $eng=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine)
+  $ty=@{}
+  foreach ($e in $eng) { if ($e.Name -match '_luid_(0x\w+_0x\w+)_phys_\d+_eng_\d+_engtype_(.*)$') { if (-not $ty[$Matches[1]]) { $ty[$Matches[1]]=@{} }; $ty[$Matches[1]][$Matches[2]]=1 } }
+  $nl=$ty.Keys | Where-Object { $k=@($ty[$_].Keys); $k.Count -eq 1 -and $k[0] -eq 'Compute' } | Select-Object -First 1
+  if ($nl) {
+    $u=0; $np=@{}
+    foreach ($e in $eng) { if ($e.Name -like "*_luid_$($nl)_*") { $u+=$e.UtilizationPercentage; if ($e.Name -match '^pid_(\d+)_') { $np[[int]$Matches[1]]+=$e.UtilizationPercentage } } }
+    o npu_util ([Math]::Min(100,$u))
+    $m=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Where-Object { $_.Name -like "luid_$($nl)_*" })
+    o npu_mem ((($m | Measure-Object SharedUsage -Sum).Sum) + (($m | Measure-Object DedicatedUsage -Sum).Sum))
+    foreach ($k in $np.Keys) { if ($k -gt 4) { $p=Get-Process -Id $k; if ($p) { [Console]::Out.WriteLine('npu_proc '+$k+' '+[string]::Format($ic,'{0}',[double]$np[$k])+' '+$p.ProcessName) } } }
+  }
 }`
 
 // probeTimeout bounds one probe (PowerShell takes about 2 s); a hung WMI or driver then shows no machine data
@@ -140,7 +158,11 @@ func probeWindows(names []string) sysState {
 	if err != nil {
 		return sysState{}
 	}
-	return parseWinProbe(string(out))
+	ss := parseWinProbe(string(out))
+	if ss.NPU.Name != "" {
+		ss.NPU.Smi = probeXrtSmi()
+	}
+	return ss
 }
 
 // parseWinProbe reads the "key value" lines of psProbe. A machine without a GPU just reports zeros.
@@ -148,6 +170,7 @@ func parseWinProbe(out string) sysState {
 	v := map[string]float64{}
 	name := ""
 	var listen []string
+	np := npuState{Util: -1, MemGB: -1}
 	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
 		k, val, ok := strings.Cut(l, " ")
 		if !ok {
@@ -155,6 +178,21 @@ func parseWinProbe(out string) sysState {
 		}
 		if k == "name" {
 			name = strings.TrimSpace(val)
+			continue
+		}
+		if k == "npu_name" {
+			np.Name = strings.TrimSpace(val)
+			continue
+		}
+		if k == "npu_proc" { // "<pid> <util %> <name>"; a malformed line is skipped, it never blanks the panel
+			f := strings.SplitN(strings.TrimSpace(val), " ", 3)
+			if len(f) == 3 {
+				pid, e1 := strconv.Atoi(f[0])
+				u, e2 := strconv.ParseFloat(f[1], 64)
+				if e1 == nil && e2 == nil {
+					np.Procs = append(np.Procs, npuProc{pid, f[2], u})
+				}
+			}
 			continue
 		}
 		if k == "listen" {
@@ -176,6 +214,16 @@ func parseWinProbe(out string) sysState {
 		RamFree: v["ram_free_kb"] / (1 << 20), RamTot: v["ram_total_kb"] / (1 << 20),
 		SwapGB: v["swap_mb"] / 1024, PageIn: v["pages_in"],
 		ProcVram: -1, Spill: -1, ProcSwap: -1, GPUUtil: -1, Cores: -1}
+	if np.Name != "" {
+		if u, ok := v["npu_util"]; ok {
+			np.Util = u
+		}
+		if m, ok := v["npu_mem"]; ok {
+			np.MemGB = m / gib
+		}
+		sort.SliceStable(np.Procs, func(i, j int) bool { return np.Procs[i].Util > np.Procs[j].Util })
+		ss.NPU = np
+	}
 	if p, ok := v["pid"]; ok && p > 0 {
 		ss.Pid, ss.Proc, ss.Guess, ss.Listen = int(p), name, v["guess"] == 1, listen
 		ss.SrvWS, ss.CPUSec = v["ws"]/gib, v["cpu_s"]
@@ -467,6 +515,7 @@ func (st *state) pollSys(configured, hold string) {
 // prev keeps the raw counters in its fields, so the returned state carries them for the next call.
 func rates(ss, prev sysState, dt float64, cumulative bool) sysState {
 	ss.Cores = -1
+	ss.NPU.CmdRate = npuRate(ss.NPU.Smi, prev.NPU.Smi, dt)
 	if ss.Pid != 0 && ss.Pid == prev.Pid && dt > 0 && ss.CPUSec >= prev.CPUSec {
 		ss.Cores = (ss.CPUSec - prev.CPUSec) / dt
 	}

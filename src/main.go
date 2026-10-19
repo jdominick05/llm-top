@@ -1321,6 +1321,18 @@ func (m model) render() string {
 			proc = st.cfg.Process
 		}
 		mach = append(mach, fg(cMuted).Render(fmt.Sprintf("%s memory %.1f GB · %.1f GB RAM free", proc, sys.SrvWS, sys.RamFree)))
+		if n := sys.NPU; n.Name != "" {
+			if n.Util >= 0 {
+				right := fmt.Sprintf("%3.0f%%", n.Util)
+				if n.MemGB >= 0 {
+					right += fmt.Sprintf("  %4.1f GB", n.MemGB)
+				}
+				mach = append(mach, fmt.Sprintf("%-6s%s %s", "NPU", gauge([]seg{{int(n.Util * 10), cTeal, "█"}}, 1000, bw), right))
+			} else {
+				mach = append(mach, fmt.Sprintf("%-6s%s", "NPU", fg(cMuted).Render("no utilization counters")))
+			}
+			mach = append(mach, fg(cMuted).Render(npuLine(n)))
+		}
 	} else if st.sysTried {
 		mach = append(mach, fg(cMuted).Render("no machine counters on this system"))
 	} else {

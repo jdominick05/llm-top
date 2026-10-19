@@ -22,7 +22,8 @@ machine-specific belongs in the code or the committed files.
 | LM Studio | `/api/v1/models` (liveness, loaded instance, context_length) | 2 s |
 | LM Studio chats | newest `~/.lmstudio/conversations/**/*.conversation.json` (sizes per kind, `tokenCount`) | 2 s |
 | LM Studio log | newest `lmstudio_logs/*/*.log`, tailed by offset (256 KB backfill on start); status lines only | 500 ms |
-| Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry); Linux: `/proc`, amdgpu sysfs, `nvidia-smi` | 5 s |
+| Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry, plus the NPU: PnP ComputeAccelerator, its compute-only adapter's engine and memory counters); Linux: `/proc`, amdgpu sysfs, `nvidia-smi` | 5 s |
+| `xrt-smi examine -r aie-partitions` | Windows, only when the probe found an NPU and `%SystemRoot%\System32\AMD\xrt-smi.exe` (or one on PATH) exists; text table parsed from stdout (its JSON needs `-o <file>`, which would break the write-nothing rule) | 5 s |
 | Hold file | `hold_file` (first line shown as HOLD) | 5 s |
 
 Why `/slots` is gated: in llama.cpp's source, `GET /slots` waits for a sleeping server to wake and its
@@ -50,6 +51,9 @@ build and test with `./src` or `./...` from the root.
 - `bottleneck.go`: `bottleneck()` (pure verdict, thresholds as consts) and `fallbackRows()` for THROUGHPUT.
 - `sys.go`: `probeSys` switches on `runtime.GOOS`; parsers (`parseWinProbe`, `probeLinux`, `parseNvidiaSmi`) are
   plain functions so tests run on any OS. No build tags.
+- `npu.go`: `npuState` (filled by the Windows probe's `npu_*` lines), `parseXrtSmi` (text table, fixture
+  `testdata/xrt_smi_aie_partitions.txt`), `npuRate` (completions/s between probes, in `rates()`), `npuLine`. No NPU power or
+  temperature (the drivers expose neither) and no clock (AMD's needs XRT's C++ API, i.e. cgo).
 - `config.go`: `config` (embeds `priceCfg`), lookup order, `rel()` path resolution, `server()`.
 - `savings.go`: `priceCfg` defaults, the per-day token `ledger` (`update`), `cost`.
 - Tests: `server_test.go` (mock llama-server per setup: idle, busy, no metrics, `--no-slots`, api key,

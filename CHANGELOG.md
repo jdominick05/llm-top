@@ -7,6 +7,10 @@
   polls that drafted (with a sparkline) next to the rate since server start, accepted tokens per draft (recent and
   since start) and, if there is room, acceptance per draft position. Hidden when the server does not draft.
   Counters going down (a server restart) start the recent window over.
+- MACHINE: an NPU row on Windows machines that have one (PnP class ComputeAccelerator): load and memory from the
+  GPU performance counters of the compute-only adapter, and the processes using it. With AMD's `xrt-smi` installed
+  (Ryzen AI NPUs) also the hardware contexts, how many are active, completed commands per second and their
+  processes, read from `xrt-smi examine -r aie-partitions`'s text output (nothing is written). Hidden without an NPU.
 
 ## 0.2.0 - 2026-10-17
 

@@ -104,7 +104,7 @@ llm-top -version
 | **CONTEXT** | context window fill (reused / read / written), what fills it for the selected session (est.), prompt size per request |
 | **THROUGHPUT** | read / write tok/s, cache reuse, speculative decoding (see below), totals since start, fallbacks and the bottleneck verdict |
 | **SAVINGS** | API cost of the same tokens minus GPU electricity, all time and today |
-| **MACHINE** | VRAM, RAM, the inference process's memory |
+| **MACHINE** | VRAM, RAM, the inference process's memory; on Windows with an NPU, its load and memory, and with AMD's `xrt-smi` its hardware contexts, commands/s and the processes holding them |
 | **AGENTS** | Qwen Code sessions of the last 6 hours and what the selected one is doing |
 | **ACTIVITY** | prompts, tool calls with duration and result, replies, compactions |
 
