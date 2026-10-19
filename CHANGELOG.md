@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-10-19
 
 - THROUGHPUT: speculative decoding rows named after the drafter(s) in the slot's `speculative.types`
   (`ngram-mod`, `dflash`, `dflash+ngram`, else `draft`) instead of "ngram accept": acceptance over the last 120
