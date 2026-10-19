@@ -188,6 +188,7 @@ func (s *session) apply(line []byte) {
 		}
 		s.compactions++
 		s.compactBefore[len(s.prompts)] = true
+		s.lastUsage = usageJSON{} // the prompt size before the compaction doesn't scale what is left
 		s.addEvent(event{T: t, Kind: "compact", Name: "compact", Detail: "context compacted", Done: true, DoneT: t})
 		s.lastKind, s.lastT = "compact", t
 		return
@@ -416,6 +417,7 @@ func (st *state) scanSessions(glob, home string, now time.Time) {
 	type cand struct {
 		path, project string
 		mod           time.Time
+		size          int64
 	}
 	var cs []cand
 	for _, f := range files {
@@ -423,9 +425,13 @@ func (st *state) scanSessions(glob, home string, now time.Time) {
 		if err != nil || now.Sub(fi.ModTime()) > 6*time.Hour || fi.Size() == 0 {
 			continue
 		}
-		cs = append(cs, cand{f, projectName(filepath.Base(filepath.Dir(filepath.Dir(f))), home), fi.ModTime()})
+		cs = append(cs, cand{f, projectName(filepath.Base(filepath.Dir(filepath.Dir(f))), home), fi.ModTime(), fi.Size()})
 	}
 	sort.Slice(cs, func(i, j int) bool { return cs[i].mod.After(cs[j].mod) })
+	recent := map[string]bool{} // sessions of the last 6 h: the others are forgotten, not kept for weeks
+	for _, c := range cs {
+		recent[c.path] = true
+	}
 	if len(cs) > 6 {
 		cs = cs[:6]
 	}
@@ -437,7 +443,7 @@ func (st *state) scanSessions(glob, home string, now time.Time) {
 		if s == nil {
 			s = newSession(c.path, c.project)
 		}
-		if !c.mod.Equal(s.Mod) {
+		if !c.mod.Equal(s.Mod) || c.size != s.off { // size too: two appends can share one mtime tick
 			ns := *s // parse outside the lock on a copy, then swap in
 			ns.compactBefore = copyMapB(s.compactBefore)
 			ns.pending = copyMapI(s.pending)
@@ -452,6 +458,11 @@ func (st *state) scanSessions(glob, home string, now time.Time) {
 	st.mu.Lock()
 	for _, s := range list {
 		st.known[s.Path] = s
+	}
+	for p := range st.known {
+		if !recent[p] {
+			delete(st.known, p)
+		}
 	}
 	st.sessions = list
 	st.mu.Unlock()

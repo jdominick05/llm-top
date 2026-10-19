@@ -23,6 +23,10 @@
 - Fixed: one config value of the wrong type (`"vram_gb": "24"`) threw the whole file away, server URL and API key
   included. Now only that field keeps its default. Config errors show in the footer instead of on stderr, which the
   full-screen view hid.
+- Fixed: right after a compaction CONTEXT put nearly the whole pre-compaction prompt into "system + tools"; it now
+  shows the unscaled estimate until the next request reports a size. A session line appended within the same
+  file-time tick as the one before is no longer missed (a tool stayed "running"), and sessions that left the last
+  6 hours are forgotten instead of kept in memory for the life of the process.
 
 ## 0.2.0 - 2026-10-17
 

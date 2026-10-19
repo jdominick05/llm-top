@@ -216,3 +216,51 @@ func TestCostGuards(t *testing.T) {
 		t.Errorf("negative prices: api %v power %v", api, pow)
 	}
 }
+
+// Right after a compaction (no usage line yet) the estimate isn't scaled to the size before it: that put nearly
+// the whole old prompt into "system + tools".
+func TestEstimateRightAfterCompaction(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	lines := strings.SplitAfter(sessionLog, "\n")
+	write(t, p, strings.Join(lines[:6], ""))
+	s := newSession(p, "x")
+	s.tail()
+	if s.lastKind != "compact" || s.lastUsage.Prompt != 0 {
+		t.Fatalf("last %q, prompt %d", s.lastKind, s.lastUsage.Prompt)
+	}
+	if est := s.estimate(s.lastUsage.Prompt); est[catSys] != 0 || est[catHist] == 0 {
+		t.Errorf("estimate %v", est)
+	}
+}
+
+// A line appended within the same mtime tick as the one before is still read; sessions gone from the last 6 h
+// are forgotten.
+func TestScanSessionsSameMtimeAndPrune(t *testing.T) {
+	d := t.TempDir()
+	lines := strings.SplitAfter(sessionLog, "\n")
+	p := filepath.Join(d, "proj", "chats", "a.jsonl")
+	write(t, p, strings.Join(lines[:3], ""))
+	now := time.Now()
+	mt := now.Add(-time.Second)
+	os.Chtimes(p, mt, mt)
+	glob := filepath.Join(d, "*", "chats", "*.jsonl")
+	st := &state{known: map[string]*session{}}
+	st.scanSessions(glob, "/nowhere", now)
+	if st.sessions[0].events[1].Done {
+		t.Fatal("tool done before its result")
+	}
+	f, _ := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(lines[3])
+	f.Close()
+	os.Chtimes(p, mt, mt) // same mtime as at the last scan
+	st.scanSessions(glob, "/nowhere", now)
+	if !st.sessions[0].events[1].Done {
+		t.Error("tool result appended in the same mtime tick was missed")
+	}
+	old := now.Add(-7 * time.Hour)
+	os.Chtimes(p, old, old)
+	st.scanSessions(glob, "/nowhere", now)
+	if len(st.sessions) != 0 || len(st.known) != 0 {
+		t.Errorf("%d sessions, %d known after 6 h", len(st.sessions), len(st.known))
+	}
+}
