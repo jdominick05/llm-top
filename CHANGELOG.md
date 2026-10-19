@@ -11,6 +11,9 @@
   GPU performance counters of the compute-only adapter, and the processes using it. With AMD's `xrt-smi` installed
   (Ryzen AI NPUs) also the hardware contexts, how many are active, completed commands per second and their
   processes, read from `xrt-smi examine -r aie-partitions`'s text output (nothing is written). Hidden without an NPU.
+- OpenRGB lighting, off by default (`"openrgb": {"enabled": true}`): RGB devices in Direct mode show the agent's
+  phase (writing, reading, tool, waiting for you, ...) through OpenRGB's SDK server, with per-phase colors in the
+  config; their colors are restored on exit. An `rgb` line in AGENTS shows the connection.
 
 ## 0.2.0 - 2026-10-17
 

@@ -209,12 +209,43 @@ A UTF-8 BOM is fine, missing fields keep their defaults, and relative paths reso
 | `kwh_price` | `0.17` | USD per kWh |
 | `fallback_read_tok_s` | `900` | read speed for the power estimate when `/metrics` has no history |
 | `fallback_write_tok_s` | `27` | write speed, same purpose |
+| `openrgb.enabled` | `false` | light RGB devices by agent state through OpenRGB (see below) |
+| `openrgb.host` | `127.0.0.1:6742` | OpenRGB's SDK server |
+| `openrgb.devices` | `[]` | device name substrings to drive (case-insensitive); empty = every device in Direct mode |
+| `openrgb.brightness` | `1` | 0 to 1 |
+| `openrgb.colors` | `{}` | phase to `#rrggbb`, e.g. `{"waiting": "#ff00ff"}` |
 
 `LLMTOP_VRAM_GB` overrides `vram_gb`.
 
 Machine counters come from one PowerShell call every 5 s on Windows (CIM GPU memory, engine and process
 counters, so any display language works) and from `/proc`, amdgpu sysfs and `nvidia-smi` on Linux. Other
 systems show no machine counters.
+
+</details>
+
+<details>
+<summary><b>RGB lighting (OpenRGB)</b></summary>
+
+With `"openrgb": {"enabled": true}` in the config, llm-top colors your RGB devices by what the agent is doing,
+through [OpenRGB](https://openrgb.org)'s SDK server (start OpenRGB with *SDK Server* on, or as a service). It only
+drives devices that are already in **Direct** mode (it never switches modes), and puts their colors back when
+you quit. The lights run while the TUI is open, not in `-once`. Effects from the OpenRGB Effects plugin on the same
+device fight with it: stop them, or leave that device out with `devices`.
+
+| Phase | Look |
+|---|---|
+| `writing` | green spot running along each zone |
+| `reading` | yellow, fast pulse |
+| `tool` | orange |
+| `waiting` | teal, slow pulse: the agent answered and waits for you |
+| `between` | blue |
+| `compacting` | red-orange, fast run |
+| `idle` / `quiet` | dim cyan: server up, no agent active |
+| `loading` | orange, slow pulse |
+| `asleep` | dim purple |
+| `offline` | dim red |
+
+The AGENTS panel shows the connection on an `rgb` line.
 
 </details>
 

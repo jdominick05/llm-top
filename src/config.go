@@ -31,6 +31,7 @@ type config struct {
 	VramGB       float64 `json:"vram_gb"`
 	Context      int     `json:"context"`
 	Help         string  `json:"_help"`
+	OpenRGB      rgbCfg  `json:"openrgb"`
 	priceCfg
 	path string // the file this came from
 }
@@ -45,7 +46,10 @@ var defaultConfig = config{
 		"token (empty = $LLAMA_API_KEY or $LM_API_TOKEN). router_model: model id to watch (llama-server router mode, " +
 		"LM Studio with several loaded; empty = first loaded). server_config: optional JSON with port/alias/model. " +
 		"sessions_dir: Qwen Code projects dir (empty = ~/.qwen/projects). hold_file: first line shown as HOLD while it " +
-		"exists. lmstudio_logs: LM Studio server-logs dir (empty = ~/.lmstudio/server-logs). vram_gb / context: 0 = detect.",
+		"exists. lmstudio_logs: LM Studio server-logs dir (empty = ~/.lmstudio/server-logs). vram_gb / context: 0 = detect. " +
+		"openrgb: light RGB devices by agent state through OpenRGB's SDK server (enabled, host, devices = name " +
+		"substrings, empty = all in Direct mode; brightness 0-1; colors = phase -> #rrggbb).",
+	OpenRGB:  rgbCfg{Host: "127.0.0.1:6742", Brightness: 1},
 	priceCfg: defaultPrices,
 }
 

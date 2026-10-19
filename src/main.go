@@ -397,7 +397,8 @@ type state struct {
 	sessions []*session
 	known    map[string]*session
 	sav      savingsState
-	lmChat   *session // LM Studio's newest conversation (sizes only), for CONTEXT when no agent is active
+	lmChat   *session   // LM Studio's newest conversation (sizes only), for CONTEXT when no agent is active
+	lights   *rgbLights // OpenRGB, nil unless enabled; set before the TUI starts
 }
 
 func (st *state) pollSessions(glob string) {
@@ -1376,6 +1377,9 @@ func (m model) render() string {
 	if len(ag) == 0 {
 		ag = append(ag, fg(cMuted).Render("no agent sessions in the last 6 h"))
 	}
+	if st.lights != nil {
+		ag = append(ag, fg(cMuted).Render("rgb  "+st.lights.Status()))
+	}
 	agPanel := panel("AGENTS  (tab = switch)", cGreen, rw, ag)
 
 	// ----- savings panel -----
@@ -1503,21 +1507,39 @@ func shortHost(u string) string {
 	return u
 }
 
-func agentNow(s *session, processing bool, decoded int, sp string) string {
+// agentPhase is what an agent session is doing; the AGENTS "now" line and the OpenRGB lights both use it.
+// e is the running tool for phTool.
+func agentPhase(s *session, processing bool, decoded int) (ph string, e *event) {
 	for i := len(s.events) - 1; i >= 0 && i >= len(s.events)-6; i-- {
-		e := s.events[i]
-		if e.Kind == "tool" && !e.Done {
-			return fg(cYellow).Render(fmt.Sprintf("%s running %s: %s (%s)", sp, shortTool(e.Name), oneLine(e.Detail), dur(time.Since(e.T))))
+		if e := &s.events[i]; e.Kind == "tool" && !e.Done {
+			return phTool, e
 		}
 	}
 	switch {
 	case time.Since(s.Mod) > 10*time.Minute && !processing:
-		return fg(cMuted).Render("quiet for " + ago(s.Mod))
+		return phQuiet, nil
 	case s.lastKind == "reply" && !processing:
-		return fg(cTeal).Render("answered, waiting for you")
+		return phWaiting, nil
 	case processing && decoded == 0:
-		return fg(cYellow).Render(sp + " model reading the context")
+		return phReading, nil
 	case processing:
+		return phWriting, nil
+	}
+	return phBetween, nil
+}
+
+func agentNow(s *session, processing bool, decoded int, sp string) string {
+	ph, e := agentPhase(s, processing, decoded)
+	switch ph {
+	case phTool:
+		return fg(cYellow).Render(fmt.Sprintf("%s running %s: %s (%s)", sp, shortTool(e.Name), oneLine(e.Detail), dur(time.Since(e.T))))
+	case phQuiet:
+		return fg(cMuted).Render("quiet for " + ago(s.Mod))
+	case phWaiting:
+		return fg(cTeal).Render("answered, waiting for you")
+	case phReading:
+		return fg(cYellow).Render(sp + " model reading the context")
+	case phWriting:
 		return fg(cGreen).Render(sp + " model thinking / writing")
 	}
 	return fg(cMuted).Render("between steps")
@@ -1604,7 +1626,15 @@ func main() {
 		fmt.Println(model{st: st, w: w, h: h}.render())
 		return
 	}
-	if _, err := tea.NewProgram(model{st: st, sel: new(string)}).Run(); err != nil {
+	if cfg.OpenRGB.Enabled { // not in -once: a test frame shouldn't touch the lights
+		st.lights = newRGB(cfg.OpenRGB, st)
+		go st.lights.run()
+	}
+	_, err = tea.NewProgram(model{st: st, sel: new(string)}).Run()
+	if st.lights != nil {
+		st.lights.stop()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
