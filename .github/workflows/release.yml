@@ -48,7 +48,11 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "llm-top ${GITHUB_REF_NAME#v}" --notes-file notes.md
+        run: |
+          # v1.2.3-rc.1 is a prerelease: never what the one-line installers pick as latest
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag $pre --title "llm-top ${GITHUB_REF_NAME#v}" --notes-file notes.md
 
   # what a new user runs: no token, no gh, Windows PowerShell 5.1 and the curl | sh one-liner
   install-check:

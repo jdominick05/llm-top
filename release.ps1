@@ -14,6 +14,11 @@ param([Parameter(Mandatory = $true)][string]$Version, [string]$InstallTo = $env:
 $ErrorActionPreference = 'Stop'
 $install = $InstallTo
 if (-not $install) { $SkipInstall = $true }
+else {
+    # full path, relative to where this was run from (before Push-Location); a folder means its llm-top.exe
+    $install = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($install)
+    if (Test-Path -PathType Container $install) { $install = Join-Path $install 'llm-top.exe' }
+}
 
 function Fail($msg) { Write-Host "release: $msg" -ForegroundColor Red; exit 1 }
 function Check($what) { if ($LASTEXITCODE -ne 0) { Fail "$what failed (exit $LASTEXITCODE)" } }
@@ -39,9 +44,14 @@ try {
         Fail "CHANGELOG.md has no '## $Version - <date>' heading"
     }
 
-    $running = $null
-    if ($install) { $running = Get-Process llm-top -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $install } }
-    if ($running -and -not $SkipInstall) { Fail "$install is running (pid $($running.Id -join ', ')); close it first or use -SkipInstall" }
+    if (-not $SkipInstall -and (Test-Path $install)) {
+        # a running exe can't be opened for writing (also one whose process path Get-Process can't read)
+        try { [IO.File]::Open($install, 'Open', 'ReadWrite', 'None').Close() }
+        catch {
+            $running = Get-Process llm-top -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $install }
+            Fail "$install is in use$(if ($running) { " (pid $($running.Id -join ', '))" }); close it first or use -SkipInstall"
+        }
+    }
 
     Write-Host "go vet"
     go vet ./...
@@ -71,10 +81,12 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'dist\SHA256SUMS'), (($lines -join "`n") + "`n"), [Text.Encoding]::ASCII)
 
+    # install before tagging: a failed copy must not leave a tag behind
+    if (-not $SkipInstall) { Copy-Item -Force $exe $install }
+
     git tag -a $tag -m "llm-top $Version"
     Check 'git tag'
 
-    if (-not $SkipInstall) { Copy-Item -Force $exe $install }
     Remove-Item -Recurse -Force $stage
 
     Write-Host "released $tag"

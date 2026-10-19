@@ -27,7 +27,8 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $repo = 'jdominick05/llm-top'
     $Version = $Version.TrimStart('v')
-    $Dir = [IO.Path]::GetFullPath($Dir).TrimEnd('\')
+    # relative to the PowerShell location: .NET's current directory doesn't follow Set-Location
+    $Dir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dir).TrimEnd('\')
     function Fail($msg) { throw "install.ps1: $msg" }
 
     if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') {

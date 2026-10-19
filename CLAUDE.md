@@ -124,8 +124,9 @@ shown as "131k?".
    refuses without it and uses that section as the release notes) and commit. The tree must be clean.
 2. `.\release.ps1 0.2.0` (semver, no `v`): refuses on a dirty tree or existing tag, runs `go vet`, builds
    windows/amd64, writes `dist\llm-top-0.2.0-windows-amd64.zip` + `dist\SHA256SUMS`, creates the annotated tag
-   `v0.2.0`, and copies the exe to `-InstallTo` / `$env:LLMTOP_INSTALL` if given (refuses if that exe is
-   running; use `-SkipInstall` then).
+   `v0.2.0`, and copies the exe to `-InstallTo` / `$env:LLMTOP_INSTALL` if given (a file or a folder, relative to
+   where you run it; refuses if that exe is in use, `-SkipInstall` then). The copy happens before the tag, so a
+   failed install leaves no tag. A `-rc.N` version is published as a prerelease.
 3. Only when the user asks to publish: `git push origin main v0.2.0`. `release.yml` reruns CI, builds
    windows/amd64 (zip) and linux/amd64 (tar.gz) with `-trimpath -ldflags "-s -w -X main.version=..."`, writes
    `SHA256SUMS`, creates the GitHub Release, then runs both install scripts on fresh runners.

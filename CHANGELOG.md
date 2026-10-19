@@ -31,6 +31,9 @@
   generation running longer than 15 minutes at INFO verbosity went idle and was never listed in ACTIVITY (it now
   still counts when its end is logged); two logs taking turns as the newest (two instances) were replayed from the
   start on every switch.
+- Install and release: `install.ps1 -Dir` with a relative path resolves against the current PowerShell location;
+  prerelease tags (`v1.2.3-rc.1`) are published as GitHub prereleases, so the one-line installers never pick them;
+  CI also parses the PowerShell scripts with Windows PowerShell 5.1.
 
 ## 0.2.0 - 2026-10-17
 

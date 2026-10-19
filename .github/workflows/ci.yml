@@ -47,7 +47,12 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            pwsh -NoProfile -Command '$e=$null; [System.Management.Automation.Language.Parser]::ParseFile("install.ps1",[ref]$null,[ref]$e) | Out-Null; if ($e) { $e; exit 1 }'
+            # Windows PowerShell 5.1 as well: it is what a new user's irm | iex runs, and it lacks 7's syntax
+            for sh in pwsh powershell; do
+              for f in install.ps1 release.ps1; do
+                F="$f" $sh -NoProfile -Command '$e=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:F).Path,[ref]$null,[ref]$e) | Out-Null; if ($e) { $e; exit 1 }' || exit 1
+              done
+            done
           else
             sh -n install.sh && dash -n install.sh
           fi
