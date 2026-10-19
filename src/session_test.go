@@ -231,6 +231,13 @@ func TestEstimateRightAfterCompaction(t *testing.T) {
 	if est := s.estimate(s.lastUsage.Prompt); est[catSys] != 0 || est[catHist] == 0 {
 		t.Errorf("estimate %v", est)
 	}
+	// every compaction now renders with no prompt size: no NaN or Inf in CONTEXT
+	st := demoState(t)
+	s.Mod, s.lastT = time.Now(), time.Now()
+	st.sessions[0] = s
+	if out := frame(t, st, 120, 50); strings.Contains(out, "NaN") || strings.Contains(out, "Inf") || !strings.Contains(out, "what fills it") {
+		t.Errorf("CONTEXT after a compaction:\n%s", out)
+	}
 }
 
 // A line appended within the same mtime tick as the one before is still read; sessions gone from the last 6 h
