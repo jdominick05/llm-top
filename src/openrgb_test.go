@@ -330,3 +330,27 @@ func TestRenderRGBStatus(t *testing.T) {
 	}
 	frame(t, st, 90, 40)
 }
+
+// Quitting while the client waits to reconnect (after a device list change) still puts the colors back, over a
+// fresh connection.
+func TestOpenRGBQuitBetweenConnections(t *testing.T) {
+	orig := []ledRGB{{9, 9, 9}, {8, 8, 8}}
+	m := newMockSDK(t, mockDev{"MSI MYSTIC LIGHT", "Direct", []int{2}, orig})
+	st := &state{srv: serverState{Polled: true, Kind: "llama.cpp", Up: true}}
+	l := newRGB(rgbCfg{Host: m.ln.Addr().String(), Brightness: 1}, st)
+	go l.run()
+	waitFor(t, "a frame", func() bool { return len(m.packets(pktUpdateLEDs)) > 0 })
+	m.mu.Lock()
+	c := m.conns[0]
+	m.mu.Unlock()
+	(&orgbConn{c: c}).send(0, pktListChange, nil)
+	time.Sleep(300 * time.Millisecond) // the client is in its 1 s wait now
+	if n := len(m.packets(pktProto)); n != 1 {
+		t.Fatalf("%d handshakes before quit, want 1", n)
+	}
+	l.stop()
+	ups := m.packets(pktUpdateLEDs)
+	if last := ups[len(ups)-1]; string(last.data) != string(ledsPacket(orig)) || len(m.packets(pktProto)) != 2 {
+		t.Errorf("not restored over a new connection: last UPDATELEDS % x, %d handshakes", last.data, len(m.packets(pktProto)))
+	}
+}

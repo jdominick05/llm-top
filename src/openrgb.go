@@ -351,6 +351,8 @@ type rgbLights struct {
 	quit chan struct{}
 	done chan struct{}
 
+	dirty bool // a frame was sent: there is something to restore (run's goroutine only)
+
 	mu     sync.Mutex
 	status string
 	orig   map[string][]ledRGB // colors when first seen, put back on exit
@@ -376,12 +378,13 @@ func (l *rgbLights) set(s string) {
 	l.mu.Unlock()
 }
 
-// stop puts the original colors back and closes the connection; it waits at most 2 s.
+// stop puts the original colors back and closes the connection; it waits at most 4 s (Windows gives a closing
+// console window 5).
 func (l *rgbLights) stop() {
 	close(l.quit)
 	select {
 	case <-l.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(4 * time.Second):
 	}
 }
 
@@ -409,6 +412,12 @@ func (l *rgbLights) run() {
 		}
 		select {
 		case <-l.quit:
+			if l.dirty { // quit between connections: the devices still show the last frame
+				if o, devs, err := l.connect(); err == nil {
+					changed, replies := listen(o)
+					l.restore(o, devs, replies, changed)
+				}
+			}
 			return
 		case <-time.After(wait):
 		}
@@ -417,18 +426,18 @@ func (l *rgbLights) run() {
 
 // connect does the handshake and lists the devices to drive.
 func (l *rgbLights) connect() (*orgbConn, []orgbDev, error) {
-	c, err := net.DialTimeout("tcp", l.cfg.Host, 2*time.Second)
+	c, err := net.DialTimeout("tcp", l.cfg.Host, time.Second)
 	if err != nil {
 		return nil, nil, err
 	}
 	o := &orgbConn{c: c}
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	if err := o.send(0, pktProto, u32(orgbProto)); err != nil {
 		return o, nil, err
 	}
 	b, err := o.recv(pktProto) // a protocol 0 server never answers: the deadline ends it
 	if err != nil || len(b) < 4 {
-		return o, nil, fmt.Errorf("OpenRGB protocol: %v", err)
+		return o, nil, fmt.Errorf("OpenRGB protocol: %w", err)
 	}
 	o.proto = min(binary.LittleEndian.Uint32(b), orgbProto)
 	if err := o.send(0, pktClientName, []byte("llm-top\x00")); err != nil {
@@ -438,7 +447,7 @@ func (l *rgbLights) connect() (*orgbConn, []orgbDev, error) {
 		return o, nil, err
 	}
 	if b, err = o.recv(pktCount); err != nil || len(b) < 4 {
-		return o, nil, fmt.Errorf("OpenRGB count: %v", err)
+		return o, nil, fmt.Errorf("OpenRGB count: %w", err)
 	}
 	var devs []orgbDev
 	for i := uint32(0); i < binary.LittleEndian.Uint32(b); i++ {
@@ -467,21 +476,7 @@ func (l *rgbLights) connect() (*orgbConn, []orgbDev, error) {
 
 // drive sends frames until quit (true, after restoring the colors), a device list change or an error.
 func (l *rgbLights) drive(o *orgbConn, devs []orgbDev) bool {
-	changed := make(chan struct{})
-	replies := make(chan uint32, 4)
-	go func() { // the only reader from here on
-		defer close(changed)
-		for {
-			id, _, err := o.read()
-			if err != nil || id == pktListChange {
-				return
-			}
-			select {
-			case replies <- id:
-			default:
-			}
-		}
-	}()
+	changed, replies := listen(o)
 	tk := time.NewTicker(80 * time.Millisecond) // ~12 fps: plenty for LEDs, gentle on SMBus RAM sticks
 	defer tk.Stop()
 	start, last := time.Now(), ""
@@ -510,13 +505,34 @@ func (l *rgbLights) drive(o *orgbConn, devs []orgbDev) bool {
 				if equalRGB(cs, d.sent) {
 					continue
 				}
+				_ = o.c.SetWriteDeadline(now.Add(time.Second)) // a hung OpenRGB must not block quitting
 				if o.send(d.idx, pktUpdateLEDs, ledsPacket(cs)) != nil {
 					return false
 				}
-				d.sent = cs
+				d.sent, l.dirty = cs, true
 			}
 		}
 	}
+}
+
+// listen reads everything the server sends from here on: changed closes on a device list change or a dead
+// connection, replies carries the ids of other packets.
+func listen(o *orgbConn) (changed chan struct{}, replies chan uint32) {
+	changed, replies = make(chan struct{}), make(chan uint32, 4)
+	go func() {
+		defer close(changed)
+		for {
+			id, _, err := o.read()
+			if err != nil || id == pktListChange {
+				return
+			}
+			select {
+			case replies <- id:
+			default:
+			}
+		}
+	}()
+	return changed, replies
 }
 
 // restore puts each device's first-seen colors back, then waits for one round trip so OpenRGB has read them
