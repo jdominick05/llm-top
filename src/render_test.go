@@ -29,7 +29,12 @@ func TestRenderAllSizes(t *testing.T) {
 	}
 	lm := demoState(t)
 	lm.srv = serverState{Kind: "lmstudio", Polled: true, Up: true, LMLoaded: 1, LM: lmState{Phase: "reading", Pct: 40}, busySince: time.Now()}
-	for name, st := range map[string]*state{"down": down, "busy": busy, "many": many, "lmstudio": lm} {
+	dual := demoState(t)
+	dual.sys = parseWinProbe(dualProbe("15032385536 13958643712 343932928 35", "12884901888 11811160064 322122547 30"))
+	if f := ansi.Strip(frame(t, dual, 120, 40)); !strings.Contains(f, "VRAM2") || !strings.Contains(f, "1 RX 7900 XTX · 2 RX 7900 XT · model on 1+2") {
+		t.Errorf("two cards:\n%s", f)
+	}
+	for name, st := range map[string]*state{"down": down, "busy": busy, "many": many, "lmstudio": lm, "dual": dual} {
 		for w := 1; w <= 130; w++ {
 			for _, h := range []int{1, 2, 5, 12, 30, 60} {
 				frame(t, st, w, h)

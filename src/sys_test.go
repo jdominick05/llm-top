@@ -110,7 +110,9 @@ func TestProbeLinuxIGPUAndNvidia(t *testing.T) {
 // The GPU engine filter must match this pid only: in WQL LIKE "_" is a wildcard, so 'pid_1818_%' matched pid 18184.
 func TestPsScript(t *testing.T) {
 	s := psScript([]string{"'llama-server'", "'LM Studio'"}, true)
-	for _, want := range []string{"foreach ($n in @('llama-server','LM Studio'))", `"Name LIKE 'pid[_]"+$best.Id+"[_]%'"`, "if ($null -ne $v)"} {
+	// the counters name adapters luid_0x<high 8 hex>_0x<low 8 hex>; DEVPKEY_Gpu_Luid is one UInt64
+	for _, want := range []string{"foreach ($n in @('llama-server','LM Studio'))", `"Name LIKE 'pid[_]"+$best.Id+"[_]%'"`, "if ($null -ne $v)",
+		"'luid_0x{0:X8}_0x{1:X8}' -f [uint32]($u -shr 32),[uint32]($u -band 4294967295)", `-like "$($id)_*"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("probe script lacks %s", want)
 		}
@@ -281,5 +283,72 @@ func TestListenAddrs(t *testing.T) {
 		"   1: 0100007F:2328 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 99999 1 0\n")
 	if got := listenAddrs(proc, 4242); len(got) != 1 || got[0] != "127.0.0.1:8091" {
 		t.Errorf("linux listen: %v", got)
+	}
+}
+
+// Two discrete cards (RX 7900 XTX 24 GB, RX 7900 XT 20 GB) and the iGPU, from one machine's counters. The legacy
+// lines are maxima over adapters; the gpu lines are what counts. iGPU and idle card always carry a little of the
+// process's memory.
+func dualProbe(xtx, xt string) string {
+	return "vram_used 23886606336\nvram_total 25753026560\nram_free_kb 18681280\nram_total_kb 32380768\nswap_mb 1153\npages_in 0\n" +
+		"pid 25640\nguess 0\nws 2114416640\ncpu_s 38.15\nproc_vram 22135398400\nproc_shared 325439488\ngpu_util 60\nname llama-server\n" +
+		"gpu 536870912 408150016 149258240 388784128 0 AMD Radeon(TM) Graphics\n" +
+		"gpu 25753026560 " + xtx + " AMD Radeon RX 7900 XTX\n" +
+		"gpu 21458059264 " + xt + " AMD Radeon RX 7900 XT\n"
+}
+
+func TestParseWinProbeCards(t *testing.T) {
+	// -dev ROCm0: all on the XTX, as with one GPU
+	ss := parseWinProbe(dualProbe("23886606336 22135398400 325439488 60", "6430720 3211264 316837888 0"))
+	if len(ss.GPUs) != 3 || ss.GPUs[0].Name != "AMD Radeon RX 7900 XTX" || !ss.GPUs[0].Model || ss.GPUs[1].Model || ss.GPUs[2].Model || ss.modelCards() != 1 {
+		t.Fatalf("cards: %+v", ss.GPUs)
+	}
+	if !near(ss.VramGB, 22.25) || !near(ss.VramTot, 23.98) || !near(ss.ProcVram, 20.62) || !near(ss.Spill, 0.303) || ss.GPUUtil != 60 {
+		t.Errorf("XTX only: %+v", ss)
+	}
+	// -dev ROCm1: the old maxima read 18 GB of the XTX's 24 and never saw the XT fill up
+	ss = parseWinProbe(dualProbe("1900000000 0 316837888 0", "20401094656 19327352832 1073741824 95"))
+	if !near(ss.VramGB, 19) || !near(ss.VramTot, 19.98) || !near(ss.Spill, 1) || ss.GPUUtil != 95 {
+		t.Errorf("XT only: %+v", ss)
+	}
+	if v, _ := bottleneck(true, ss, ss.VramTot, 16); !strings.Contains(v, "VRAM full") {
+		t.Errorf("XT only verdict %q", v)
+	}
+	// split: sums, load summed (the cards take turns)
+	ss = parseWinProbe(dualProbe("15032385536 13958643712 343932928 35", "12884901888 11811160064 322122547 30"))
+	if ss.modelCards() != 2 || !near(ss.VramGB, 26) || !near(ss.VramTot, 43.97) || !near(ss.ProcVram, 24) || !near(ss.Spill, 0.62) || ss.GPUUtil != 65 {
+		t.Errorf("split: %+v", ss)
+	}
+	if v, _ := bottleneck(true, ss, ss.VramTot, 16); !strings.Contains(v, "GPU-bound") {
+		t.Errorf("split verdict %q", v)
+	}
+	// split, the XT full and spilling while the XTX has room: 39 of 44 GB is not 90%, the card is
+	ss = parseWinProbe(dualProbe("19327352832 18253611008 343932928 50", "21152923648 20401094656 1610612736 50"))
+	if v, _ := bottleneck(true, ss, ss.VramTot, 16); !strings.Contains(v, "VRAM full") {
+		t.Errorf("one card overflowing: %q (%+v)", v, ss)
+	}
+	// split, both full but only the normal shared memory per card: 0.5 + 0.5 GB is over the one-card threshold
+	ss = parseWinProbe(dualProbe("24696061952 23622320128 536870912 50", "20937965568 19864223744 536870912 50"))
+	if v, _ := bottleneck(true, ss, ss.VramTot, 16); strings.Contains(v, "VRAM full") || overflow(ss, ss.VramTot) {
+		t.Errorf("split at rest flagged: %q", v)
+	}
+	// no server process: VRAM is the biggest card's, not the busiest adapter's
+	ss = parseWinProbe("ram_total_kb 8000000\nvram_used 9000000000\nvram_total 25753026560\n" +
+		"gpu 21458059264 9000000000 0 0 -1 AMD Radeon RX 7900 XT\ngpu 25753026560 2000000000 0 0 -1 AMD Radeon RX 7900 XTX\n")
+	if !near(ss.VramGB, 1.86) || !near(ss.VramTot, 23.98) || ss.modelCards() != 0 || ss.GPUUtil != -1 {
+		t.Errorf("no process: %+v", ss)
+	}
+	// a malformed gpu line is skipped, it never blanks the panel
+	ss = parseWinProbe(winProbeOut + "gpu 1 x 2 3 4 bad\ngpu 5\n")
+	if !ss.OK || len(ss.GPUs) != 0 || !near(ss.VramGB, 23.756) {
+		t.Errorf("malformed: %+v", ss)
+	}
+}
+
+func TestCardName(t *testing.T) {
+	for in, want := range map[string]string{"AMD Radeon RX 7900 XTX": "RX 7900 XTX", "NVIDIA GeForce RTX 4090": "RTX 4090", "NVIDIA RTX A6000": "RTX A6000", "": "GPU"} {
+		if got := cardName(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
 	}
 }

@@ -1404,7 +1404,30 @@ func (m model) render() string {
 		if st.cfg.VramGB > 0 {
 			vt = st.cfg.VramGB
 		}
+		proc := sys.Proc
+		if proc == "" {
+			proc = st.cfg.Process
+		}
+		var cards []gpuCard // discrete GPUs: one gauge each once there are two
+		for _, c := range sys.GPUs {
+			if c.Tot >= dgpuMinGB {
+				cards = append(cards, c)
+			}
+		}
 		switch {
+		case len(cards) > 1:
+			var names, on []string
+			for i, c := range cards {
+				mach = append(mach, fmt.Sprintf("%-6s%s %s", fmt.Sprintf("VRAM%d", i+1), gauge([]seg{{int(c.Used * 100), vramColor(c.Used, c.Tot), "█"}}, int(c.Tot*100), bw), fmt.Sprintf("%5.1f / %.0f GB", c.Used, c.Tot)))
+				names = append(names, fmt.Sprintf("%d %s", i+1, cardName(c.Name)))
+				if c.Model {
+					on = append(on, strconv.Itoa(i+1))
+				}
+			}
+			if len(on) > 0 {
+				names = append(names, "model on "+strings.Join(on, "+"))
+			}
+			mach = append(mach, fg(cMuted).Render(strings.Join(names, " · ")))
 		case vt > 0:
 			mach = append(mach, fmt.Sprintf("%-6s%s %s", "VRAM", gauge([]seg{{int(vr * 100), vramColor(vr, vt), "█"}}, int(vt*100), bw), fmt.Sprintf("%5.1f / %.0f GB", vr, vt)))
 		case vr > 0:
@@ -1414,10 +1437,6 @@ func (m model) render() string {
 		}
 		ru := sys.RamTot - sys.RamFree
 		mach = append(mach, fmt.Sprintf("%-6s%s %s", "RAM", gauge([]seg{{int(ru * 100), ramColor(sys.RamFree), "█"}}, int(sys.RamTot*100), bw), fmt.Sprintf("%5.1f / %.0f GB", ru, sys.RamTot)))
-		proc := sys.Proc
-		if proc == "" {
-			proc = st.cfg.Process
-		}
 		mach = append(mach, fg(cMuted).Render(fmt.Sprintf("%s memory %.1f GB · %.1f GB RAM free", proc, sys.SrvWS, sys.RamFree)))
 		if n := sys.NPU; n.Name != "" {
 			if n.Util >= 0 {
@@ -1667,6 +1686,17 @@ func agentNow(s *session, processing bool, decoded int, sp string) string {
 		return fg(cGreen).Render(sp + " model thinking / writing")
 	}
 	return fg(cMuted).Render("between steps")
+}
+
+// cardName drops the vendor and brand from an adapter name: "AMD Radeon RX 7900 XTX" is "RX 7900 XTX".
+func cardName(n string) string {
+	for _, p := range []string{"AMD ", "NVIDIA ", "Intel(R) ", "Radeon ", "GeForce "} {
+		n = strings.TrimPrefix(n, p)
+	}
+	if n == "" {
+		return "GPU"
+	}
+	return n
 }
 
 func vramColor(gb, tot float64) color.Color {

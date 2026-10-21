@@ -104,7 +104,7 @@ llm-top -version
 | **CONTEXT** | context window fill (reused / read / written), what fills it for the selected session (est.), prompt size per request |
 | **THROUGHPUT** | read / write tok/s, cache reuse, speculative decoding (see below), totals since start, fallbacks and the bottleneck verdict |
 | **SAVINGS** | API cost of the same tokens minus GPU electricity, all time and today |
-| **MACHINE** | VRAM, RAM, the inference process's memory; on Windows with an NPU, its load and memory, and with AMD's `xrt-smi` its hardware contexts, commands/s and the processes holding them |
+| **MACHINE** | VRAM (one gauge per GPU when there are several, and which ones hold the model), RAM, the inference process's memory; on Windows with an NPU, its load and memory, and with AMD's `xrt-smi` its hardware contexts, commands/s and the processes holding them |
 | **AGENTS** | Qwen Code sessions of the last 6 hours and what the selected one is doing |
 | **ACTIVITY** | prompts, tool calls with duration and result, replies, compactions |
 
@@ -136,9 +136,9 @@ whatever holds more than 1 GB of VRAM. A `?` after the name means it was guessed
 
 | Row | Meaning |
 |---|---|
-| **spill** | GPU memory living in system RAM: on Windows the process's shared GPU memory, which the driver fills with whatever doesn't fit in VRAM and which runs at PCIe speed (about 0.35 GB is normal); on Linux, amdgpu GTT. Then page file / swap in use and how fast memory is read back from disk. |
-| **load** | GPU utilization of the process (Windows) or the card (Linux), and the CPU cores the process uses. |
-| **▸ verdict** | the first that applies: **paging** (more than 2 MB/s read back from disk, or the process in swap) · **VRAM full** (more than 0.75 GB spilled) · **CPU-bound** (1.5+ cores while the GPU is under 50%: layers or KV cache on the CPU) · **GPU-bound (normal)**. When idle: **busy-wait** (a server burning cores without work, e.g. llama-server without `--poll 0`) or the VRAM headroom. |
+| **spill** | GPU memory living in system RAM: on Windows the process's shared GPU memory, which the driver fills with whatever doesn't fit in VRAM and which runs at PCIe speed (about 0.35 GB per GPU is normal; with the model on several GPUs, summed over those); on Linux, amdgpu GTT. Then page file / swap in use and how fast memory is read back from disk. |
+| **load** | GPU utilization of the process (Windows; summed over the GPUs it holds the model on, capped at 100%) or the card (Linux), and the CPU cores the process uses. |
+| **▸ verdict** | the first that applies: **paging** (more than 2 MB/s read back from disk, or the process in swap) · **VRAM full** (more than 0.75 GB spilled while VRAM is 90% full; with several GPUs, on one card) · **CPU-bound** (1.5+ cores while the GPU is under 50%: layers or KV cache on the CPU) · **GPU-bound (normal)**. When idle: **busy-wait** (a server burning cores without work, e.g. llama-server without `--poll 0`) or the VRAM headroom. |
 
 ## Servers
 
@@ -200,7 +200,7 @@ is left alone and the defaults are used. Either way the footer says what is wron
 | `sessions_dir` | `""` | Qwen Code projects dir; empty = `~/.qwen/projects` |
 | `hold_file` | `llm-watchdog.hold` | while it exists its first line shows as `HOLD` |
 | `lmstudio_logs` | `""` | LM Studio's server-logs dir; empty = `~/.lmstudio/server-logs` |
-| `vram_gb` | `0` | total VRAM; 0 = detect (registry on Windows, amdgpu sysfs or `nvidia-smi` on Linux) |
+| `vram_gb` | `0` | total VRAM; 0 = detect (registry on Windows, summed over the GPUs holding the model; amdgpu sysfs or `nvidia-smi` on Linux, the biggest card) |
 | `context` | `0` | context size if the server reports none |
 | `price_label` | `Claude Sonnet 5.5` | name shown in the SAVINGS footer |
 | `input_per_m` | `2.00` | USD per million input tokens |
@@ -220,8 +220,9 @@ is left alone and the defaults are used. Either way the footer says what is wron
 `LLMTOP_VRAM_GB` overrides `vram_gb`.
 
 Machine counters come from one PowerShell call every 5 s on Windows (CIM GPU memory, engine and process
-counters, so any display language works) and from `/proc`, amdgpu sysfs and `nvidia-smi` on Linux. Other
-systems show no machine counters.
+counters, so any display language works; each GPU's counters are matched to the card by its LUID) and from
+`/proc`, amdgpu sysfs and `nvidia-smi` on Linux. On Linux only the biggest GPU is shown. Other systems show no
+machine counters.
 
 </details>
 

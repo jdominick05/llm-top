@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Several GPUs (Windows): VRAM, spill and GPU load now come from the cards the inference process holds the model
+  on (1 GB or more of its VRAM there), summed, instead of the biggest VRAM total next to the busiest adapter's use,
+  which could be two different cards. "VRAM full" is judged per card, so one card overflowing while the other has
+  room is caught, and the normal ~0.35 GB of shared memory per card does not add up to a false alarm. MACHINE shows
+  one VRAM gauge per discrete GPU and which ones hold the model. Cards are matched to their counters by LUID
+  (`DEVPKEY_Gpu_Luid`); totals come from present cards only, so registry keys of removed cards no longer count.
+
 ## 0.3.0 - 2026-10-19
 
 - THROUGHPUT: speculative decoding rows named after the drafter(s) in the slot's `speculative.types`

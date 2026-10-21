@@ -45,7 +45,7 @@ func bottleneck(busy bool, ss sysState, vramTot float64, ncpu int) (string, colo
 		return fmt.Sprintf("paging: %.1f GB of %s is in swap", ss.ProcSwap, proc), cRed
 	case ss.ProcSwap >= 0.1 && !busy:
 		return fmt.Sprintf("%.1f GB of %s is in swap (not read back now)", ss.ProcSwap, proc), cOrange
-	case ss.Spill >= spillWarnGB && vramFull(ss, vramTot):
+	case overflow(ss, vramTot):
 		c := cOrange
 		if busy {
 			c = cRed
@@ -66,6 +66,20 @@ func bottleneck(busy bool, ss sysState, vramTot float64, ncpu int) (string, colo
 		return fmt.Sprintf("busy on %.1f cores, GPU load unknown", ss.Cores), cYellow
 	}
 	return "busy · no fallbacks", cGreen
+}
+
+// overflow says whether the process's shared GPU memory means the model did not fit. With the model on several
+// cards each is judged alone (one card can overflow while the other has room, and the ~0.35 GB at rest is per card).
+func overflow(ss sysState, vramTot float64) bool {
+	if ss.modelCards() < 2 {
+		return ss.Spill >= spillWarnGB && vramFull(ss, vramTot)
+	}
+	for _, c := range ss.GPUs {
+		if c.Model && c.Shared >= spillWarnGB && c.Used >= vramFullFrac*c.Tot {
+			return true
+		}
+	}
+	return false
 }
 
 // vramFull says whether spill means "did not fit": dedicated VRAM is (nearly) full. Integrated GPUs and unified
@@ -93,7 +107,7 @@ func fallbackRows(busy bool, off string, ss sysState, vramTot float64, ncpu int)
 		}
 		return s
 	}
-	spill := "RAM " + gb(ss.Spill, ss.Spill >= spillWarnGB && vramFull(ss, vramTot))
+	spill := "RAM " + gb(ss.Spill, overflow(ss, vramTot))
 	rate := fmt.Sprintf("@ %.1f MB/s", ss.PageIn*4096/1e6) // read back from disk
 	if ss.PageIn >= pageInWarn {
 		rate = fg(cRed).Render(rate)

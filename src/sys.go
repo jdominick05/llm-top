@@ -5,7 +5,9 @@
 // doing the work) for the bottleneck line.
 //
 // Windows: one PowerShell call every 5 s (CIM classes, locale independent; VRAM total from the display adapter's
-// registry key; per-process GPU memory and engine use from the GPU performance counters). Linux: /proc and sysfs
+// registry key; per-process GPU memory and engine use from the GPU performance counters, per card: PnP gives each
+// display device's LUID, which names its counters, and its registry key). With several GPUs the numbers are those of
+// the cards holding the model. Linux: /proc and sysfs
 // (amdgpu VRAM, GTT and busy %), else nvidia-smi. Everything else shows no counters. The engine process is the first
 // configured name that runs (the one using most VRAM if several do), else whatever holds more than 1 GB of VRAM.
 // The parsers are plain functions so tests run on any OS.
@@ -51,7 +53,22 @@ type sysState struct {
 	pageInRaw float64  // Linux: pswpin at this probe
 
 	NPU npuState // Windows only; NPU.Name "" = no NPU
+
+	GPUs []gpuCard // Windows: every GPU with memory of its own, biggest first; nil = no per-card counters
 }
+
+// gpuCard is one GPU. A model split across cards (llama.cpp -dev ROCm0,ROCm1, --tensor-split) has a part on each.
+type gpuCard struct {
+	Name         string
+	Used, Tot    float64 // dedicated memory, GB
+	Proc, Shared float64 // the inference process on this card: dedicated and shared memory, GB
+	Util         float64 // %, the process's busiest engine on this card, -1 = unknown
+	Model        bool    // the process holds at least modelCardGB here
+}
+
+// modelCardGB of the process's VRAM make a card one the model runs on; the runtime keeps a few MB (or a few
+// hundred, on the iGPU) on every other GPU.
+const modelCardGB = 1
 
 const gib = 1 << 30
 
@@ -79,9 +96,9 @@ o ram_free_kb $os.FreePhysicalMemory
 o ram_total_kb $os.TotalVisibleMemorySize
 o swap_mb (Get-CimInstance Win32_PageFileUsage | Measure-Object CurrentUsage -Sum).Sum
 o pages_in (Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory).PagesInputPersec
-$gm=@{}
+$gm=@{}; $gp=@{}
 foreach ($r in Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory) {
-  if ($r.Name -match '^pid_(\d+)_') { $k=[int]$Matches[1]; $e=$gm[$k]
+  if ($r.Name -match '^pid_(\d+)_(luid_0x[0-9a-f]+_0x[0-9a-f]+)_') { $k=[int]$Matches[1]; $e=$gm[$k]; $gp[[string]$k+' '+$Matches[2]]=@([double]$r.DedicatedUsage,[double]$r.SharedUsage)
     if (-not $e -or $r.DedicatedUsage -gt $e[0]) { $gm[$k]=@([double]$r.DedicatedUsage,[double]$r.SharedUsage) } }
 }
 $lm=%s
@@ -103,10 +120,22 @@ if ($best) {
   o ws $best.WorkingSet64
   o cpu_s $best.CPU
   $g=$gm[$best.Id]; if ($g) { o proc_vram $g[0]; o proc_shared $g[1] }
-  o gpu_util (Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -Filter ("Name LIKE 'pid[_]"+$best.Id+"[_]%%'") | Measure-Object UtilizationPercentage -Maximum).Maximum
+  $pe=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -Filter ("Name LIKE 'pid[_]"+$best.Id+"[_]%%'"))
+  o gpu_util ($pe | Measure-Object UtilizationPercentage -Maximum).Maximum
   $nm=$best.ProcessName; if (eng $best) { $nm='LM Studio' }
   foreach ($c in Get-NetTCPConnection -State Listen -OwningProcess $best.Id) { [Console]::Out.WriteLine('listen '+$c.LocalAddress+' '+$c.LocalPort) }
   [Console]::Out.WriteLine('name '+$nm)
+}
+$am=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory)
+foreach ($d in Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'") {
+  $dp=@{}; foreach ($x in (Invoke-CimMethod -InputObject $d -MethodName GetDeviceProperties -Arguments @{devicePropertyKeys=@('DEVPKEY_Device_Driver','{60b193cb-5276-4d0f-96fc-f173abad3ec6} 2')}).deviceProperties) { $dp[$x.KeyName]=$x.Data }
+  $l=$dp['{60b193cb-5276-4d0f-96fc-f173abad3ec6} 2']; $t=(Get-ItemProperty ('HKLM:\SYSTEM\CurrentControlSet\Control\Class\'+$dp['DEVPKEY_Device_Driver']) -Name 'HardwareInformation.qwMemorySize').'HardwareInformation.qwMemorySize'
+  if ($null -eq $l -or -not $t) { continue }
+  $u=[uint64]$l; $id='luid_0x{0:X8}_0x{1:X8}' -f [uint32]($u -shr 32),[uint32]($u -band 4294967295)
+  $pm=@(0,0); $pu=$null
+  if ($best) { if ($gp[[string]$best.Id+' '+$id]) { $pm=$gp[[string]$best.Id+' '+$id] }; $pu=($pe | Where-Object { $_.Name -like "*_$($id)_*" } | Measure-Object UtilizationPercentage -Maximum).Maximum }
+  $au=($am | Where-Object { $_.Name -like "$($id)_*" } | Measure-Object DedicatedUsage -Sum).Sum
+  [Console]::Out.WriteLine('gpu '+[string]::Format($ic,'{0} {1} {2} {3} {4}',[double]$t,[double]$au,$pm[0],$pm[1],$(if ($null -eq $pu) { -1 } else { [double]$pu }))+' '+$d.Name)
 }
 $npu=Get-CimInstance Win32_PnPEntity -Filter "PNPClass='ComputeAccelerator'" | Select-Object -First 1
 if ($npu) {
@@ -170,6 +199,7 @@ func parseWinProbe(out string) sysState {
 	v := map[string]float64{}
 	name := ""
 	var listen []string
+	var cards []gpuCard
 	np := npuState{Util: -1, MemGB: -1}
 	for _, l := range strings.Split(strings.ReplaceAll(out, "\r", ""), "\n") {
 		k, val, ok := strings.Cut(l, " ")
@@ -193,6 +223,25 @@ func parseWinProbe(out string) sysState {
 					np.Procs = append(np.Procs, npuProc{pid, f[2], u})
 				}
 			}
+			continue
+		}
+		if k == "gpu" { // "<total> <used> <process dedicated> <process shared> <process util> <name>", bytes and %; a malformed line is skipped
+			f := strings.SplitN(strings.TrimSpace(val), " ", 6)
+			var x [5]float64
+			bad := len(f) < 5
+			for i := 0; i < len(x) && !bad; i++ {
+				var err error
+				x[i], err = strconv.ParseFloat(f[i], 64)
+				bad = err != nil
+			}
+			if bad {
+				continue
+			}
+			c := gpuCard{Used: x[1] / gib, Tot: x[0] / gib, Proc: x[2] / gib, Shared: x[3] / gib, Util: x[4]}
+			if len(f) == 6 {
+				c.Name = strings.TrimSpace(f[5])
+			}
+			cards = append(cards, c)
 			continue
 		}
 		if k == "listen" {
@@ -234,7 +283,50 @@ func parseWinProbe(out string) sysState {
 			ss.ProcVram, ss.Spill = v["proc_vram"]/gib, v["proc_shared"]/gib
 		}
 	}
+	ss.useCards(cards)
 	return ss
+}
+
+// useCards replaces the single-GPU numbers (the biggest VRAM total and the busiest adapter, which need not be the
+// same card) with those of the cards the process holds the model on: VRAM, the process's VRAM and spill summed,
+// GPU load summed (layer split runs the cards in turn). Without such a card (no server, or it sleeps unloaded)
+// VRAM is the biggest card's.
+func (ss *sysState) useCards(cards []gpuCard) {
+	if len(cards) == 0 {
+		return
+	}
+	sort.SliceStable(cards, func(i, j int) bool { return cards[i].Tot > cards[j].Tot })
+	var used, tot, proc, shared, util float64
+	n := 0
+	for i := range cards {
+		c := &cards[i]
+		c.Model = ss.Pid > 0 && c.Proc >= modelCardGB
+		if c.Model {
+			n++
+			used, tot, proc, shared = used+c.Used, tot+c.Tot, proc+c.Proc, shared+c.Shared
+			util += max(0, c.Util)
+		}
+	}
+	ss.GPUs = cards
+	if n == 0 {
+		ss.VramGB, ss.VramTot = cards[0].Used, cards[0].Tot
+		return
+	}
+	ss.VramGB, ss.VramTot, ss.ProcVram, ss.Spill = used, tot, proc, shared
+	if ss.GPUUtil >= 0 {
+		ss.GPUUtil = min(100, util)
+	}
+}
+
+// modelCards counts the cards the model runs on.
+func (ss sysState) modelCards() int {
+	n := 0
+	for _, c := range ss.GPUs {
+		if c.Model {
+			n++
+		}
+	}
+	return n
 }
 
 // ---------- linux ----------
