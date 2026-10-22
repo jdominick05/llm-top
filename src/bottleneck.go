@@ -113,6 +113,9 @@ func fallbackRows(busy bool, off string, ss sysState, vramTot float64, ncpu int)
 		rate = fg(cRed).Render(rate)
 	}
 	page := fmt.Sprintf("pagefile %.1f GB %s", ss.SwapGB, rate)
+	if ss.Linux {
+		page = fmt.Sprintf("swap %.1f GB %s", ss.SwapGB, rate)
+	}
 	if ss.ProcSwap >= 0 { // Linux: what of the process is in swap
 		page = "swap " + gb(ss.ProcSwap, ss.ProcSwap >= 0.1) + " " + rate
 	}

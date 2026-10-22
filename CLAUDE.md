@@ -22,7 +22,7 @@ machine-specific belongs in the code or the committed files.
 | LM Studio | `/api/v1/models` (loaded instance, context_length); in between a TCP connect (not logged) checks liveness | 10 s (`lmModelsEvery`), at once when a request starts |
 | LM Studio chats | newest `~/.lmstudio/conversations/**/*.conversation.json` (sizes per kind, `tokenCount`) | 2 s |
 | LM Studio log | newest `lmstudio_logs/*/*.log`, tailed by offset (256 KB backfill on start, offsets kept per file); status lines only | 500 ms |
-| Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry, one `gpu` line per card matched to its counters by `DEVPKEY_Gpu_Luid`, plus the NPU: PnP ComputeAccelerator, its compute-only adapter's engine and memory counters); Linux: `/proc`, amdgpu sysfs, `nvidia-smi` | 5 s |
+| Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry, one `gpu` line per card matched to its counters by `DEVPKEY_Gpu_Luid`, plus the NPU: PnP ComputeAccelerator, its compute-only adapter's engine and memory counters); Linux: `/proc` (the server's `fdinfo`: `drm-memory-vram`/`gtt` per `drm-pdev`, one count per `drm-client-id`), amdgpu sysfs (`PCI_SLOT_NAME` from `uevent`), `nvidia-smi` | 5 s |
 | `xrt-smi examine -r aie-partitions` | Windows, only when the probe found an NPU and `%SystemRoot%\System32\AMD\xrt-smi.exe` (or one on PATH) exists; text table parsed from stdout (its JSON needs `-o <file>`, which would break the write-nothing rule) | 5 s |
 | Hold file | `hold_file` (first line shown as HOLD) | 5 s |
 | OpenRGB SDK | `openrgb.host` (TCP, protocol <= 5), only with `openrgb.enabled` and not in `-once`; the one connection llm-top writes over (UPDATELEDS to Direct-mode devices, restored on exit) | 80 ms frames, sent on change |
@@ -53,7 +53,8 @@ build and test with `./src` or `./...` from the root.
 - `bottleneck.go`: `bottleneck()` (pure verdict, thresholds as consts) and `fallbackRows()` for THROUGHPUT.
 - `sys.go`: `probeSys` switches on `runtime.GOOS`; parsers (`parseWinProbe`, `probeLinux`, `parseNvidiaSmi`) are
   plain functions so tests run on any OS. No build tags. Several GPUs (Windows): `useCards` sums the cards holding
-  at least `modelCardGB` of the process's VRAM; `overflow` (bottleneck.go) judges spill per card. Linux: biggest card only.
+  at least `modelCardGB` of the process's VRAM; `overflow` (bottleneck.go) judges spill per card. Linux: the same via
+  `amdGPUs` + `drmMem` (amdgpu); NVIDIA: biggest card only.
 - `npu.go`: `npuState` (filled by the Windows probe's `npu_*` lines), `parseXrtSmi` (text table, fixture
   `testdata/xrt_smi_aie_partitions.txt`), `npuRate` (completions/s between probes, in `rates()`), `npuLine`. No NPU power or
   temperature (the drivers expose neither) and no clock (AMD's needs XRT's C++ API, i.e. cgo).

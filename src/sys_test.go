@@ -63,7 +63,7 @@ func fakeLinux(t *testing.T, amd bool) (proc, sys string) {
 	write(t, filepath.Join(proc, "1", "comm"), "systemd\n")
 	write(t, filepath.Join(proc, "1", "status"), "Name:\tsystemd\nVmRSS:\t   12000 kB\n")
 	write(t, filepath.Join(proc, "4242", "comm"), "llama-server\n")
-	write(t, filepath.Join(proc, "4242", "status"), "Name:\tllama-server\nVmRSS:\t 2097152 kB\nVmSwap:\t  524288 kB\n")
+	write(t, filepath.Join(proc, "4242", "status"), "Name:\tllama-server\nVmRSS:\t 9437184 kB\nRssAnon:\t 2080768 kB\nRssFile:\t 7340032 kB\nRssShmem:\t   16384 kB\nVmSwap:\t  524288 kB\n")
 	write(t, filepath.Join(proc, "4242", "stat"), "4242 (llama-server) S 1 4242 4242 0 -1 4194560 100 0 0 0 1500 250 0 0 20 0 9 0 100 0 0\n")
 	write(t, filepath.Join(proc, "self", "comm"), "llm-top\n")
 	if amd {
@@ -119,6 +119,46 @@ func TestPsScript(t *testing.T) {
 	}
 	if strings.Contains(s, "%!") || strings.Contains(s, "%%") {
 		t.Error("format verbs left in the probe script")
+	}
+}
+
+// Two 7900s holding a split model (-dev ROCm0,ROCm1) and the Ryzen iGPU: the process's share of each card comes from
+// its DRM fdinfo, one count per client however many fds repeat it.
+func TestProbeLinuxSplitModel(t *testing.T) {
+	proc, sys := fakeLinux(t, false)
+	card := func(n, pdev, tot, used, gtt, busy string) {
+		dev := filepath.Join(sys, "class", "drm", n, "device")
+		write(t, filepath.Join(dev, "mem_info_vram_total"), tot)
+		write(t, filepath.Join(dev, "mem_info_vram_used"), used)
+		write(t, filepath.Join(dev, "mem_info_gtt_used"), gtt)
+		write(t, filepath.Join(dev, "gpu_busy_percent"), busy)
+		write(t, filepath.Join(dev, "uevent"), "DRIVER=amdgpu\nPCI_ID=1002:744C\nPCI_SLOT_NAME="+pdev+"\n")
+	}
+	card("card1", "0000:03:00.0", "25753026560\n", "20053274624\n", "900000000\n", "40\n")
+	card("card2", "0000:06:00.0", "21458059264\n", "15406784512\n", "100000000\n", "35\n")
+	card("card3", "0000:76:00.0", "536870912\n", "63123456\n", "300000000\n", "2\n")
+	fdinfo := func(fd, pdev, id, vram, gtt string) {
+		write(t, filepath.Join(proc, "4242", "fdinfo", fd), "pos:\t0\nflags:\t02100002\ndrm-driver:\tamdgpu\ndrm-client-id:\t"+id+
+			"\ndrm-pdev:\t"+pdev+"\ndrm-memory-vram:\t"+vram+"\ndrm-memory-gtt: \t"+gtt+"\ndrm-memory-cpu: \t0 KiB\n")
+	}
+	write(t, filepath.Join(proc, "4242", "fdinfo", "0"), "pos:\t0\nflags:\t0100002\nmnt_id:\t25\n")
+	fdinfo("5", "0000:03:00.0", "415", "18558284 KiB", "26708 KiB")
+	fdinfo("6", "0000:03:00.0", "415", "18558284 KiB", "26708 KiB") // a dup of fd 5
+	fdinfo("7", "0000:06:00.0", "416", "14939528 KiB", "524288 KiB")
+	fdinfo("8", "0000:76:00.0", "417", "88 KiB", "26720 KiB")
+	ss := probeLinux(proc, sys, []string{"llama-server"}, func() string { return "" })
+	if ss.modelCards() != 2 || len(ss.GPUs) != 3 || ss.GPUs[0].Name != "card1" || !ss.GPUs[1].Model || ss.GPUs[2].Model {
+		t.Fatalf("cards: %+v", ss.GPUs)
+	}
+	if !near(ss.VramGB, 33.02) || !near(ss.VramTot, 43.97) || !near(ss.ProcVram, 31.95) || ss.GPUUtil != 75 {
+		t.Errorf("%+v", ss)
+	}
+	if !near(ss.Spill, 0.52) || !near(ss.GPUs[1].Shared, 0.5) || !near(ss.GPUs[0].Proc, 17.7) {
+		t.Errorf("spill %.2f, cards %+v", ss.Spill, ss.GPUs)
+	}
+	// no server: the desktop's GTT is not spill
+	if ss := probeLinux(proc, sys, []string{"ollama-runner"}, func() string { return "" }); ss.Spill != -1 || !near(ss.VramTot, 23.98) || ss.GPUUtil != 40 {
+		t.Errorf("no process: %+v", ss)
 	}
 }
 

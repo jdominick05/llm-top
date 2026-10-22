@@ -54,7 +54,9 @@ type sysState struct {
 
 	NPU npuState // Windows only; NPU.Name "" = no NPU
 
-	GPUs []gpuCard // Windows: every GPU with memory of its own, biggest first; nil = no per-card counters
+	GPUs []gpuCard // every GPU with memory of its own (Windows; amdgpu on Linux), biggest first; nil = no per-card counters
+
+	Linux bool // probed from /proc: swap, not a page file
 }
 
 // gpuCard is one GPU. A model split across cards (llama.cpp -dev ROCm0,ROCm1, --tensor-split) has a part on each.
@@ -340,7 +342,7 @@ func probeLinux(procRoot, sysRoot string, names []string, smi func() string) sys
 	if mi["MemTotal"] <= 0 {
 		return sysState{}
 	}
-	ss := sysState{OK: true, RamTot: mi["MemTotal"] / (1 << 20), RamFree: mi["MemAvailable"] / (1 << 20),
+	ss := sysState{OK: true, Linux: true, RamTot: mi["MemTotal"] / (1 << 20), RamFree: mi["MemAvailable"] / (1 << 20),
 		SwapGB: (mi["SwapTotal"] - mi["SwapFree"]) / (1 << 20), ProcVram: -1, Spill: -1, ProcSwap: -1, GPUUtil: -1, Cores: -1}
 	if vs, err := os.ReadFile(filepath.Join(procRoot, "vmstat")); err == nil {
 		for _, l := range strings.Split(string(vs), "\n") {
@@ -354,7 +356,11 @@ func probeLinux(procRoot, sysRoot string, names []string, smi func() string) sys
 		ss.Pid, ss.Proc, ss.Listen = pid, name, listenAddrs(procRoot, pid)
 		if st, err := os.ReadFile(filepath.Join(d, "status")); err == nil {
 			kv := parseKV(string(st))
+			// VmRSS counts the mmap'd model file, which is page cache (reclaimable, "free"): only the process's own pages
 			ss.SrvWS = kv["VmRSS"] / (1 << 20)
+			if a, ok := kv["RssAnon"]; ok {
+				ss.SrvWS = (a + kv["RssShmem"]) / (1 << 20)
+			}
 			if sw, ok := kv["VmSwap"]; ok {
 				ss.ProcSwap = sw / (1 << 20)
 			}
@@ -363,16 +369,33 @@ func probeLinux(procRoot, sysRoot string, names []string, smi func() string) sys
 			ss.CPUSec = statCPU(string(st))
 		}
 	}
-	// both kinds are asked: a Ryzen iGPU (amdgpu, 512 MB) must not hide an NVIDIA card. The bigger one wins.
-	if g, ok := amdGPU(sysRoot); ok {
-		ss.VramGB, ss.VramTot, ss.GPUUtil = g.used/gib, g.tot/gib, g.busy
-		if g.gtt >= 0 {
-			ss.Spill = g.gtt / gib
+	// amdgpu: every card, and the process's share of each from its DRM fdinfo. Without that share (another user's
+	// process) the biggest card counts, its card-wide GTT standing in for spill.
+	if amd := amdGPUs(sysRoot); len(amd) > 0 {
+		var mem map[string][2]float64
+		if ss.Pid > 0 {
+			mem = drmMem(filepath.Join(procRoot, strconv.Itoa(ss.Pid), "fdinfo"))
 		}
+		cards := make([]gpuCard, len(amd))
+		var proc, shared float64
+		for i, g := range amd {
+			m := mem[g.pdev]
+			cards[i] = gpuCard{Name: g.name, Used: g.used / gib, Tot: g.tot / gib, Proc: m[0] / gib, Shared: m[1] / gib, Util: g.busy}
+			proc, shared = proc+m[0]/gib, shared+m[1]/gib
+		}
+		ss.GPUUtil = amd[0].busy
+		switch {
+		case mem != nil:
+			ss.ProcVram, ss.Spill = proc, shared
+		case ss.Pid > 0 && amd[0].gtt >= 0:
+			ss.Spill = amd[0].gtt / gib
+		}
+		ss.useCards(cards)
 	}
+	// both kinds are asked: a Ryzen iGPU (amdgpu, 512 MB) must not hide an NVIDIA card. The bigger one wins.
 	if smi != nil {
 		if used, tot, util, ok := parseNvidiaSmi(smi()); ok && tot/1024 > ss.VramTot {
-			ss.VramGB, ss.VramTot, ss.GPUUtil, ss.Spill = used/1024, tot/1024, util, -1
+			ss.VramGB, ss.VramTot, ss.GPUUtil, ss.Spill, ss.ProcVram, ss.GPUs = used/1024, tot/1024, util, -1, -1, nil
 		}
 	}
 	return ss
@@ -505,22 +528,90 @@ func statCPU(s string) float64 {
 	return (u + st) / 100
 }
 
-type amdCard struct{ used, tot, gtt, busy float64 }
+type amdCard struct {
+	name, pdev           string // pdev: PCI address, as DRM fdinfo names it
+	used, tot, gtt, busy float64
+}
 
-// amdGPU picks the card with the most VRAM from the amdgpu sysfs files (bytes, busy in %).
-func amdGPU(sysRoot string) (amdCard, bool) {
-	var best amdCard
-	ok := false
+// amdGPUs lists the amdgpu cards from sysfs (bytes, busy in %), biggest first.
+func amdGPUs(sysRoot string) []amdCard {
+	var out []amdCard
 	files, _ := filepath.Glob(filepath.Join(sysRoot, "class", "drm", "card*", "device", "mem_info_vram_total"))
 	for _, f := range files {
 		d := filepath.Dir(f)
-		t := readNum(f)
-		u := readNum(filepath.Join(d, "mem_info_vram_used"))
-		if t > best.tot && u >= 0 {
-			best, ok = amdCard{used: u, tot: t, gtt: readNum(filepath.Join(d, "mem_info_gtt_used")), busy: readNum(filepath.Join(d, "gpu_busy_percent"))}, true
+		t, u := readNum(f), readNum(filepath.Join(d, "mem_info_vram_used"))
+		if t <= 0 || u < 0 {
+			continue
 		}
+		g := amdCard{name: filepath.Base(filepath.Dir(d)), used: u, tot: t, gtt: readNum(filepath.Join(d, "mem_info_gtt_used")), busy: readNum(filepath.Join(d, "gpu_busy_percent"))}
+		if b, err := os.ReadFile(filepath.Join(d, "product_name")); err == nil && strings.TrimSpace(string(b)) != "" {
+			g.name = strings.TrimSpace(string(b))
+		}
+		if b, err := os.ReadFile(filepath.Join(d, "uevent")); err == nil {
+			for _, l := range strings.Split(string(b), "\n") {
+				if v, ok := strings.CutPrefix(strings.TrimSpace(l), "PCI_SLOT_NAME="); ok {
+					g.pdev = v
+				}
+			}
+		}
+		out = append(out, g)
 	}
-	return best, ok
+	sort.SliceStable(out, func(i, j int) bool { return out[i].tot > out[j].tot })
+	return out
+}
+
+// drmMem sums a process's GPU memory per PCI address from its DRM fdinfo, in bytes: [0] VRAM, [1] GTT. Every fd of
+// one DRM client repeats that client's numbers, so each drm-client-id counts once. nil = fdinfo unreadable (another
+// user's process).
+func drmMem(dir string) map[string][2]float64 {
+	fds, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	m, seen := map[string][2]float64{}, map[string]bool{}
+	for _, fd := range fds {
+		b, err := os.ReadFile(filepath.Join(dir, fd.Name()))
+		if err != nil {
+			continue
+		}
+		kv := map[string]string{}
+		for _, l := range strings.Split(string(b), "\n") {
+			if k, v, ok := strings.Cut(l, ":"); ok && strings.HasPrefix(k, "drm-") {
+				kv[k] = strings.TrimSpace(v)
+			}
+		}
+		pdev := kv["drm-pdev"]
+		id := pdev + " " + kv["drm-client-id"]
+		if pdev == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		x := m[pdev]
+		x[0] += drmBytes(kv, "vram")
+		x[1] += drmBytes(kv, "gtt")
+		m[pdev] = x
+	}
+	return m
+}
+
+// drmBytes reads drm-memory-<region> (amdgpu), else drm-resident-<region>: "123 KiB", MiB, GiB or plain bytes.
+func drmBytes(kv map[string]string, region string) float64 {
+	v, ok := kv["drm-memory-"+region]
+	if !ok {
+		v = kv["drm-resident-"+region]
+	}
+	f := strings.Fields(v)
+	if len(f) == 0 {
+		return 0
+	}
+	x, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return 0
+	}
+	if u, ok := map[string]float64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}[f[len(f)-1]]; ok {
+		x *= u
+	}
+	return x
 }
 
 func readNum(p string) float64 {

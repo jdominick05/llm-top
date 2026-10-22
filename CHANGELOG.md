@@ -8,6 +8,13 @@
   room is caught, and the normal ~0.35 GB of shared memory per card does not add up to a false alarm. MACHINE shows
   one VRAM gauge per discrete GPU and which ones hold the model. Cards are matched to their counters by LUID
   (`DEVPKEY_Gpu_Luid`); totals come from present cards only, so registry keys of removed cards no longer count.
+- Several GPUs (Linux, amdgpu): the same per-card view. The process's VRAM and GTT on each card come from its DRM
+  fdinfo (`/proc/<pid>/fdinfo`, matched to the card by PCI address), so a model split over two cards shows both,
+  sums their VRAM and load, and spill is the process's own GTT. Before, only the biggest card was read and spill
+  was that card's GTT, the desktop's included; with no server running spill is now "n/a". The swap row says
+  "swap" instead of "pagefile" when no server process is found.
+- Linux: the server's "memory" in MACHINE is its own pages (`RssAnon` + `RssShmem`), no longer `VmRSS`, which counted
+  the mmap'd model file in the page cache (26 GB "used" next to 26 GB "free" for a mmap'd GGUF).
 
 ## 0.3.0 - 2026-10-19
 
