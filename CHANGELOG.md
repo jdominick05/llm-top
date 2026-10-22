@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-10-22
 
 - Several GPUs (Windows): VRAM, spill and GPU load now come from the cards the inference process holds the model
   on (1 GB or more of its VRAM there), summed, instead of the biggest VRAM total next to the busiest adapter's use,
