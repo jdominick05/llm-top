@@ -300,6 +300,23 @@ func TestCaminusPanels(t *testing.T) {
 	if f := frame(t, first, 120, 40); !strings.Contains(f, "reading /caminus/status…") {
 		t.Errorf("first:\n%s", f)
 	}
+	// a per-position rate outside [0, 1] is clamped (it used to index past sparkTo's blocks), the status left as sent
+	for _, c := range []struct {
+		r    []float64
+		want string
+	}{{[]float64{1.5}, "prose 3% █ "}, {[]float64{-0.2}, "prose 3%   "}, {[]float64{1e300, -1e300, 0.5}, "prose 3% █ ▄ "}} {
+		bad := camState(t, "caminus_status.json")
+		bad.sessions = nil
+		p := bad.srv.Cam.DFlash.Classes["prose"]
+		p.PerPosRate = c.r
+		bad.srv.Cam.DFlash.Classes["prose"] = p
+		if f := frame(t, bad, 120, 40); !strings.Contains(f, c.want) {
+			t.Errorf("rates %v: missing %q:\n%s", c.r, c.want, f)
+		}
+		if got := bad.srv.Cam.DFlash.Classes["prose"].PerPosRate; got[0] != c.r[0] {
+			t.Errorf("rates %v: the status was changed to %v", c.r, got)
+		}
+	}
 }
 
 // What went wrong is counted and colored; a reasoning loop shows in the panel and, while busy, in the status line.

@@ -407,9 +407,14 @@ func camRows(srv *serverState, w int) []string {
 		if len(active) > 0 {
 			npos := max(1, min(8, (w-8-used+2)/len(active)))
 			for _, k := range active {
+				// a share, clamped to [0, 1] in a copy: a server's 1.5 or -0.2 must not index past sparkTo's blocks
 				r := cs.DFlash.Classes[camClasses[k]].PerPosRate
 				r = r[:min(len(r), npos)]
-				cl[k] += sparkTo(r, len(r), 1, cPurple)
+				c := make([]float64, len(r))
+				for i, x := range r {
+					c[i] = min(1, max(0, x))
+				}
+				cl[k] += sparkTo(c, len(c), 1, cPurple)
 			}
 		}
 		rows = append(rows, a, pad+strings.Join(cl, "  "))
