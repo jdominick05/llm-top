@@ -1719,13 +1719,15 @@ func ramColor(free float64) color.Color {
 	return cGreen
 }
 
-const usage = `usage: llm-top [-config <path>] [-once [width height]] | -version
+const usage = `usage: llm-top [-config <path>] [-once [width height] | -web [host:port]] | -version
   -config <path>  config file (default: $LLMTOP_CONFIG, llm-top.json next to the exe, or the user config dir)
   -once [w h]     print one frame after ~7 s of polling and exit (no TTY needed)
+  -web [addr]     no TUI: serve the dashboard to browsers on addr (default: web.listen, :8765)
   -version        print the version`
 
 func main() {
 	cfgPath, once, w, h := "", false, 140, 60
+	web, webAddr := false, ""
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1747,6 +1749,12 @@ func main() {
 						w, h, i = a, b, i+2
 					}
 				}
+			}
+		case "-web", "--web":
+			web = true
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				webAddr = args[i]
 			}
 		case "-h", "-help", "--help":
 			fmt.Println(usage)
@@ -1782,6 +1790,23 @@ func main() {
 		time.Sleep(7 * time.Second)
 		fmt.Println(model{st: st, w: w, h: h}.render())
 		return
+	}
+	if web { // headless: no lights either, a TUI started next to it may drive them
+		if webAddr == "" {
+			webAddr = cfg.Web.Listen
+		}
+		webAddr = listenAddr(webAddr)
+		fmt.Fprintf(os.Stderr, "llm-top: serving on %s\n", webAddr)
+		fmt.Fprintln(os.Stderr, "llm-top:", st.serveWeb(webAddr, cfg.Web.Token))
+		os.Exit(1)
+	}
+	if cfg.Web.Enabled {
+		go func() {
+			err := st.serveWeb(cfg.Web.Listen, cfg.Web.Token)
+			st.mu.Lock()
+			st.cfgErr = strings.TrimPrefix(st.cfgErr+"; web: "+err.Error(), "; ")
+			st.mu.Unlock()
+		}()
 	}
 	if cfg.OpenRGB.Enabled { // not in -once: a test frame shouldn't touch the lights
 		st.lights = newRGB(cfg.OpenRGB, st)

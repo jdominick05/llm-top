@@ -106,211 +106,7 @@ func lmProps(nctx int) propsJSON {
 	return p
 }
 
-// ---------- ANSI -> SVG ----------
-
-type cell struct {
-	r        rune
-	fg, bg   string
-	bold     bool
-	hasStyle bool
-}
-
-func parseANSI(s string) [][]cell {
-	var out [][]cell
-	for _, l := range strings.Split(s, "\n") {
-		var row []cell
-		fg, bg, bold := "", "", false
-		for i := 0; i < len(l); {
-			if l[i] == 0x1b && i+1 < len(l) && l[i+1] == '[' {
-				j := i + 2
-				for j < len(l) && (l[j] < 0x40 || l[j] > 0x7e) {
-					j++
-				}
-				if j < len(l) && l[j] == 'm' {
-					ps := strings.Split(l[i+2:j], ";")
-					for k := 0; k < len(ps); k++ {
-						switch ps[k] {
-						case "", "0":
-							fg, bg, bold = "", "", false
-						case "1":
-							bold = true
-						case "22":
-							bold = false
-						case "39":
-							fg = ""
-						case "49":
-							bg = ""
-						case "38", "48":
-							if k+4 < len(ps) && ps[k+1] == "2" {
-								c := rgb(ps[k+2], ps[k+3], ps[k+4])
-								if ps[k] == "38" {
-									fg = c
-								} else {
-									bg = c
-								}
-								k += 4
-							}
-						}
-					}
-				}
-				i = j + 1
-				continue
-			}
-			r, n := []rune(l[i:])[0], len(string([]rune(l[i:])[0]))
-			row = append(row, cell{r: r, fg: fg, bg: bg, bold: bold})
-			i += n
-		}
-		out = append(out, row)
-	}
-	return out
-}
-
-func rgb(r, g, b string) string {
-	x, _ := strconv.Atoi(r)
-	y, _ := strconv.Atoi(g)
-	z, _ := strconv.Atoi(b)
-	return fmt.Sprintf("#%02x%02x%02x", x, y, z)
-}
-
-const (
-	cw, chH  = 8.4, 17.0 // cell size at 14 px
-	padX     = 16.0
-	padTop   = 40.0
-	bgColor  = "#1d2129"
-	defColor = "#d8dee9"
-)
-
-var eighths = map[rune]int{'▁': 1, '▂': 2, '▃': 3, '▄': 4, '▅': 5, '▆': 6, '▇': 7, '█': 8}
-
-// svgLine draws one terminal line at y = 0. Blocks and box-drawing lines become rectangles and text is placed
-// word by word, so the layout holds in any monospace font.
-func svgLine(row []cell) string {
-	var b strings.Builder
-	for i := 0; i < len(row); {
-		c := row[i]
-		j := i + 1
-		for j < len(row) && row[j].fg == c.fg && row[j].bg == c.bg && row[j].bold == c.bold {
-			j++
-		}
-		if c.bg != "" {
-			fmt.Fprintf(&b, `<rect x="%.1f" y="0" width="%.1f" height="%.1f" fill="%s"/>`, float64(i)*cw, float64(j-i)*cw+.3, chH, c.bg)
-		}
-		col := c.fg
-		if col == "" {
-			col = defColor
-		}
-		weight := ""
-		if c.bold {
-			weight = ` font-weight="bold"`
-		}
-		for k := i; k < j; {
-			r := row[k].r
-			switch {
-			case eighths[r] > 0 || r == '░': // merge equal blocks into one rect
-				m := k + 1
-				for m < j && row[m].r == r {
-					m++
-				}
-				x, w := float64(k)*cw, float64(m-k)*cw+.3
-				if r == '░' {
-					fmt.Fprintf(&b, `<rect x="%.1f" y="3" width="%.1f" height="%.1f" fill="%s" opacity=".35"/>`, x, w-.3, chH-6, col)
-				} else {
-					h := chH * float64(eighths[r]) / 8
-					extra := 0.0
-					if r == '█' {
-						extra = .3 // no hairline between rows
-					}
-					fmt.Fprintf(&b, `<rect x="%.1f" y="%.2f" width="%.1f" height="%.2f" fill="%s"/>`, x, chH-h, w, h+extra, col)
-				}
-				k = m
-			case boxes[r] != "":
-				fmt.Fprintf(&b, `<g fill="%s">%s</g>`, col, boxRects(r, float64(k)*cw))
-				k++
-			case r == ' ':
-				k++
-			default: // a word: up to the next space, block or box char
-				m := k + 1
-				for m < j && row[m].r != ' ' && eighths[row[m].r] == 0 && row[m].r != '░' && boxes[row[m].r] == "" {
-					m++
-				}
-				fmt.Fprintf(&b, `<text x="%.1f" y="13" fill="%s"%s textLength="%.1f" lengthAdjust="spacingAndGlyphs">%s</text>`,
-					float64(k)*cw, col, weight, float64(m-k)*cw, xmlEsc(string(runesOf(row[k:m]))))
-				k = m
-			}
-		}
-		i = j
-	}
-	return b.String()
-}
-
-// boxes: which sides a box-drawing char reaches (l r u d); upper case = double line.
-var boxes = map[rune]string{
-	'─': "lr", '│': "ud", '╭': "rd", '╮': "ld", '╰': "ru", '╯': "lu", '┌': "rd", '┐': "ld", '└': "ru", '┘': "lu",
-	'═': "LR", '║': "UD", '╔': "RD", '╗': "LD", '╚': "RU", '╝': "LU",
-}
-
-// boxRects draws a box char as rects. Double lines sit 1.6 px either side of the center; at a corner the outer
-// line starts where the other outer line runs, the inner one where the other inner one runs.
-func boxRects(r rune, x float64) string {
-	spec := boxes[r]
-	double := spec[0] < 'a'
-	sp := strings.ToLower(spec)
-	has := func(c byte) bool { return strings.IndexByte(sp, c) >= 0 }
-	cx, cy := x+cw/2, chH/2
-	const t = 1.3
-	var b strings.Builder
-	rect := func(x0, y0, x1, y1 float64) {
-		fmt.Fprintf(&b, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f"/>`, x0, y0, x1-x0, y1-y0)
-	}
-	sh, sv := 0.0, 0.0 // which way the arms go at a corner
-	if has('r') != has('l') {
-		sh = map[bool]float64{true: 1, false: -1}[has('r')]
-	}
-	if has('d') != has('u') {
-		sv = map[bool]float64{true: 1, false: -1}[has('d')]
-	}
-	offs := []float64{0}
-	if double {
-		offs = []float64{-1.6, 1.6}
-	}
-	for _, o := range offs {
-		if has('l') || has('r') {
-			x0, x1 := x, x+cw+.3
-			if sh != 0 && sv != 0 {
-				if st := cx + sh*sv*o; sh > 0 {
-					x0 = st - t/2
-				} else {
-					x1 = st + t/2
-				}
-			}
-			rect(x0, cy+o-t/2, x1, cy+o+t/2)
-		}
-		if has('u') || has('d') {
-			y0, y1 := 0.0, chH+.3
-			if sh != 0 && sv != 0 {
-				if st := cy + sv*sh*o; sv > 0 {
-					y0 = st - t/2
-				} else {
-					y1 = st + t/2
-				}
-			}
-			rect(cx+o-t/2, y0, cx+o+t/2, y1)
-		}
-	}
-	return b.String()
-}
-
-func runesOf(cs []cell) []rune {
-	out := make([]rune, len(cs))
-	for i, c := range cs {
-		out[i] = c.r
-	}
-	return out
-}
-
-func xmlEsc(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(s)
-}
+// ---------- animated SVG ----------
 
 // svgFrames writes a terminal window; several frames play in a loop, each frameDur long. Lines shared by frames
 // are stored once.
@@ -365,7 +161,7 @@ func svgFrames(frames []string, title string, frameDur float64) string {
 		fmt.Fprintf(&body, `<g opacity="%s"><animate attributeName="opacity" values="%s" keyTimes="%s" dur="%.2fs" calcMode="discrete" repeatCount="indefinite"/>%s</g>`+"\n",
 			init, vals, keys, total, g.String())
 	}
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%.0f" height="%.0f" viewBox="0 0 %.0f %.0f" font-family="'MesloLGS NF','Cascadia Mono','JetBrains Mono','SF Mono',Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="14" xml:space="preserve">
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%.0f" height="%.0f" viewBox="0 0 %.0f %.0f" font-family="%s" font-size="14" xml:space="preserve">
 <rect width="100%%" height="100%%" rx="10" fill="%s"/>
 <circle cx="20" cy="18" r="6" fill="#bf616a"/><circle cx="40" cy="18" r="6" fill="#ebcb8b"/><circle cx="60" cy="18" r="6" fill="#a3be8c"/>
 <text x="%.0f" y="23" fill="#6b7489" text-anchor="middle" font-size="13">%s</text>
@@ -374,7 +170,7 @@ func svgFrames(frames []string, title string, frameDur float64) string {
 <g transform="translate(%.0f %.0f)">
 %s</g>
 </svg>
-`, W, H, W, H, bgColor, W/2, xmlEsc(title), defs.String(), padX, padTop, body.String())
+`, W, H, W, H, svgFont, bgColor, W/2, xmlEsc(title), defs.String(), padX, padTop, body.String())
 }
 
 // ---------- banner ----------
@@ -410,14 +206,14 @@ func bannerSVG() string {
 	for ri, row := range rows {
 		fmt.Fprintf(&body, `<g transform="translate(20 %.1f)">%s</g>`+"\n", 18+float64(ri)*chH, svgLine(row))
 	}
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%.0f" height="%.0f" viewBox="0 0 %.0f %.0f" font-family="'MesloLGS NF','Cascadia Mono','JetBrains Mono','SF Mono',Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="14" xml:space="preserve">
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%.0f" height="%.0f" viewBox="0 0 %.0f %.0f" font-family="%s" font-size="14" xml:space="preserve">
 <defs>
 <linearGradient id="gb" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="%.0f" y2="0"><stop offset="0" stop-color="#88c0d0"/><stop offset=".55" stop-color="#81a1c1"/><stop offset="1" stop-color="#b48ead"/></linearGradient>
 <linearGradient id="gs" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="%.0f" y2="0"><stop offset="0" stop-color="#4c6a78"/><stop offset="1" stop-color="#5e4a62"/></linearGradient>
 </defs>
 <rect width="100%%" height="100%%" rx="10" fill="%s"/>
 %s</svg>
-`, W, H, W, H, float64(n)*cw, float64(n)*cw, bgColor,
+`, W, H, W, H, svgFont, float64(n)*cw, float64(n)*cw, bgColor,
 		strings.NewReplacer(`fill="#010101"`, `fill="url(#gb)"`, `fill="#020202"`, `fill="url(#gs)"`).Replace(body.String()))
 }
 

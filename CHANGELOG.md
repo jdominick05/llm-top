@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Web view: the dashboard in a browser, for checking on the machine from elsewhere (a phone over VPN). The frame
+  is the TUI's own, rendered to SVG, sized to the window and refreshed every second; tab or a tap switches the
+  session. `"web": {"enabled": true}` serves it while the TUI runs, `-web [host:port]` serves it without a TUI.
+  Default port 8765, optional `web.token`; GET only, nothing written.
+
 ## 0.4.0 - 2026-10-22
 
 - Several GPUs (Windows): VRAM, spill and GPU load now come from the cards the inference process holds the model

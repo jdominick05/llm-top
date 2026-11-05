@@ -93,6 +93,7 @@ lacks the bar-chart blocks too.
 llm-top                       # tab / shift+tab: switch session · q, esc, ctrl+c: quit
 llm-top -config my.json       # use another config file
 llm-top -once 140 60          # print a single frame after ~7 s and exit (no TTY needed)
+llm-top -web :8765            # no TUI: serve the dashboard to browsers (see "Web view" below)
 llm-top -version
 ```
 
@@ -216,6 +217,9 @@ is left alone and the defaults are used. Either way the footer says what is wron
 | `openrgb.devices` | `[]` | device name substrings to drive (case-insensitive); empty = every device in Direct mode |
 | `openrgb.brightness` | `1` | 0 to 1 |
 | `openrgb.colors` | `{}` | phase to `#rrggbb`, e.g. `{"waiting": "#ff00ff"}` |
+| `web.enabled` | `false` | serve the dashboard to browsers while the TUI runs (see below) |
+| `web.listen` | `:8765` | `host:port` to serve on; `:8765` = every interface, `127.0.0.1:8765` = this machine only |
+| `web.token` | `""` | when set, required as `?token=` in the URL (or `Authorization: Bearer`) |
 
 `LLMTOP_VRAM_GB` overrides `vram_gb`.
 
@@ -250,6 +254,29 @@ device fight with it: stop them, or leave that device out with `devices`.
 | `offline` | dim red |
 
 The AGENTS panel shows the connection on an `rgb` line.
+
+</details>
+
+<details>
+<summary><b>Web view</b></summary>
+
+llm-top can serve the same dashboard to a web browser, e.g. to check on a long agent run from your phone over a
+VPN into your home network. The page shows exactly what the TUI shows (the frame is rendered to SVG, so the
+layout holds in any browser font), sized to the window and refreshed every second; on a phone the panels stack
+and the page scrolls. Tab / shift+tab, or a tap, switch the session, independently of the TUI. When the
+machine can't be reached the last frame stays, dimmed, with the time it was taken.
+
+Two ways to run it:
+
+- `"web": {"enabled": true}` in the config: served while the TUI is open.
+- `llm-top -web` (or `-web :9000`, `-web 127.0.0.1:8765`): no TUI, just the web server, e.g. as a startup task or
+  service. It does not drive the OpenRGB lights. Stop it with ctrl+c.
+
+Then open `http://<machine's LAN address>:8765/` (with `?token=...` if you set one). The server only answers GET
+and writes nothing; it does not use HTTPS, so keep it on your LAN / VPN and don't forward the port to the
+internet. The dashboard shows your agents' prompts, tool calls and file paths: set `web.token` if anyone else is
+on that network. On Windows the first start asks to allow llm-top through the firewall (private networks are
+enough); on Linux open the port in your firewall if it has one.
 
 </details>
 

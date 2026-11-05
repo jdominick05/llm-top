@@ -34,6 +34,7 @@ type config struct {
 	Context      int     `json:"context"`
 	Help         string  `json:"_help"`
 	OpenRGB      rgbCfg  `json:"openrgb"`
+	Web          webCfg  `json:"web"`
 	priceCfg
 	path string // the file this came from
 }
@@ -50,8 +51,11 @@ var defaultConfig = config{
 		"sessions_dir: Qwen Code projects dir (empty = ~/.qwen/projects). hold_file: first line shown as HOLD while it " +
 		"exists. lmstudio_logs: LM Studio server-logs dir (empty = ~/.lmstudio/server-logs). vram_gb / context: 0 = detect. " +
 		"openrgb: light RGB devices by agent state through OpenRGB's SDK server (enabled, host, devices = name " +
-		"substrings, empty = all in Direct mode; brightness 0-1; colors = phase -> #rrggbb).",
+		"substrings, empty = all in Direct mode; brightness 0-1; colors = phase -> #rrggbb). web: serve the dashboard to " +
+		"browsers while the TUI runs (enabled, listen = host:port, token = required as ?token= when set; -web serves " +
+		"without the TUI).",
 	OpenRGB:  rgbCfg{Host: "127.0.0.1:6742", Brightness: 1},
+	Web:      webCfg{Listen: ":8765"},
 	priceCfg: defaultPrices,
 }
 

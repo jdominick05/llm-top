@@ -25,6 +25,7 @@ machine-specific belongs in the code or the committed files.
 | Machine counters | Windows: one `powershell` call (CIM GPU memory/engine/process + registry, one `gpu` line per card matched to its counters by `DEVPKEY_Gpu_Luid`, plus the NPU: PnP ComputeAccelerator, its compute-only adapter's engine and memory counters); Linux: `/proc` (the server's `fdinfo`: `drm-memory-vram`/`gtt` per `drm-pdev`, one count per `drm-client-id`), amdgpu sysfs (`PCI_SLOT_NAME` from `uevent`), `nvidia-smi` | 5 s |
 | `xrt-smi examine -r aie-partitions` | Windows, only when the probe found an NPU and `%SystemRoot%\System32\AMD\xrt-smi.exe` (or one on PATH) exists; text table parsed from stdout (its JSON needs `-o <file>`, which would break the write-nothing rule) | 5 s |
 | Hold file | `hold_file` (first line shown as HOLD) | 5 s |
+| Web view (listener) | `web.listen` (`:8765`), only with `web.enabled` (next to the TUI) or `-web` (headless, no lights); GET `/` and `/frame?w&h&sel&d` (SVG of `render()`), `web.token` checked when set | on request |
 | OpenRGB SDK | `openrgb.host` (TCP, protocol <= 5), only with `openrgb.enabled` and not in `-once`; the one connection llm-top writes over (UPDATELEDS to Direct-mode devices, restored on exit) | 80 ms frames, sent on change |
 
 Why `/slots` is gated: in llama.cpp's source, `GET /slots` waits for a sleeping server to wake and its
@@ -33,8 +34,9 @@ Why `/slots` is gated: in llama.cpp's source, `GET /slots` waits for a sleeping 
 that isn't `loaded`/`sleeping` (that could load it).
 
 Never write to the server (GET only, no slot actions) or to the session logs; the opt-in OpenRGB connection is the
-only thing llm-top sends commands to, and it never switches device modes. The only file the tool writes is
-its config, and only when it does not exist yet (`loadConfig`).
+only thing llm-top sends commands to, and it never switches device modes. The opt-in web view only answers GETs
+with the rendered frame; it must never gain endpoints that act on the server, the sessions or the lights. The only
+file the tool writes is its config, and only when it does not exist yet (`loadConfig`).
 
 ## Layout
 
@@ -61,6 +63,9 @@ build and test with `./src` or `./...` from the root.
 - `openrgb.go`: SDK client (`parseController`, `ledsPacket`), `rgbPhase` (from `agentPhase`, shared with the
   AGENTS "now" line), `looks` per phase, `rgbLights.run` (reconnects, re-lists on DEVICE_LIST_UPDATED, restores on
   `stop`). Tests: `openrgb_test.go` with a mock SDK server.
+- `web.go`: `webHandler` (GET only, token, page + `/frame`), `frameSVG`, and the ANSI -> SVG converter
+  (`parseANSI`, `svgLine`, `boxRects`) shared with the README screenshots. The page keeps its own selection
+  (`sel` round-trips via `X-Llmtop-Sel`). Tests: `web_test.go` (escaping, token, 405, every SGR `render()` emits).
 - `config.go`: `config` (embeds `priceCfg`), lookup order, `rel()` path resolution, `server()`.
 - `savings.go`: `priceCfg` defaults, the per-day token `ledger` (`update`), `cost`.
 - Tests: `server_test.go` (mock llama-server per setup: idle, busy, no metrics, `--no-slots`, api key,
