@@ -160,6 +160,15 @@ func TestProbeLinuxSplitModel(t *testing.T) {
 	if ss := probeLinux(proc, sys, []string{"ollama-runner"}, func() string { return "" }); ss.Spill != -1 || !near(ss.VramTot, 23.98) || ss.GPUUtil != 40 {
 		t.Errorf("no process: %+v", ss)
 	}
+	// the same split held by Caminus (comm "caminus"): both cards' VRAM, spill and load through the same fdinfo path
+	if err := os.Rename(filepath.Join(proc, "4242"), filepath.Join(proc, "5150")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(proc, "5150", "comm"), "caminus\n")
+	ss = probeLinux(proc, sys, procNames("caminus", "llama-server"), func() string { return "" })
+	if ss.Pid != 5150 || ss.Proc != "caminus" || ss.modelCards() != 2 || !near(ss.ProcVram, 31.95) || !near(ss.Spill, 0.52) || ss.GPUUtil != 75 {
+		t.Errorf("caminus: pid %d %q cards %d vram %.2f spill %.2f", ss.Pid, ss.Proc, ss.modelCards(), ss.ProcVram, ss.Spill)
+	}
 }
 
 func TestProbeLinuxNvidia(t *testing.T) {
@@ -198,6 +207,32 @@ func TestFindProc(t *testing.T) {
 	}
 	if pid, _ := findProc(proc, procNames("llama.cpp", "llama-server")); pid != 4242 {
 		t.Errorf("llama: %d", pid)
+	}
+}
+
+// Caminus names its process "caminus" (prctl): found by comm for its kind and in auto mode, never taken for a
+// llama-server the user configured.
+func TestFindProcCaminus(t *testing.T) {
+	proc, _ := fakeLinux(t, false) // llama-server is 4242
+	write(t, filepath.Join(proc, "3100", "comm"), "caminus\n")
+	write(t, filepath.Join(proc, "3100", "status"), "VmRSS:\t 400000 kB\n")
+	if pid, name := findProc(proc, procNames("caminus", "llama-server")); pid != 3100 || name != "caminus" {
+		t.Errorf("caminus: %d %q", pid, name)
+	}
+	if pid, _ := findProc(proc, procNames("llama.cpp", "llama-server")); pid != 4242 {
+		t.Errorf("llama.cpp: %d", pid)
+	}
+	if pid, _ := findProc(proc, procNames("", "llama-server")); pid != 4242 { // auto: the configured name first
+		t.Errorf("auto with both: %d", pid)
+	}
+	if err := os.RemoveAll(filepath.Join(proc, "4242")); err != nil {
+		t.Fatal(err)
+	}
+	if pid, name := findProc(proc, procNames("", "llama-server")); pid != 3100 || name != "caminus" {
+		t.Errorf("auto, caminus alone: %d %q", pid, name)
+	}
+	if n := procNames("caminus", "caminus"); len(n) != 1 {
+		t.Errorf("names %v", n)
 	}
 }
 

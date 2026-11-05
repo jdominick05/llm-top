@@ -140,11 +140,11 @@ func TestConfigPathsAndKey(t *testing.T) {
 	}
 	t.Setenv("LLAMA_API_KEY", "from-env")
 	t.Setenv("LM_API_TOKEN", "lm-env")
-	if k := c.apiKeys(); k["llama.cpp"] != "from-env" || k["lmstudio"] != "lm-env" {
+	if k := c.apiKeys(); k["llama.cpp"] != "from-env" || k["lmstudio"] != "lm-env" || k["caminus"] != "from-env" {
 		t.Errorf("env keys %v", k)
 	}
 	c.APIKey = "from-file"
-	if k := c.apiKeys(); k["llama.cpp"] != "from-file" || k["lmstudio"] != "from-file" {
+	if k := c.apiKeys(); k["llama.cpp"] != "from-file" || k["lmstudio"] != "from-file" || k["caminus"] != "from-file" {
 		t.Error("file key wins")
 	}
 	t.Setenv("LLMTOP_CONFIG", filepath.Join(d, "env.json"))
@@ -163,7 +163,8 @@ func TestBaseName(t *testing.T) {
 
 func TestBackendAndRel(t *testing.T) {
 	for in, want := range map[string]string{"": "auto", "auto": "auto", "llama.cpp": "llama.cpp", "llamacpp": "llama.cpp",
-		"llama-server": "llama.cpp", "LMStudio": "lmstudio", "lm studio": "lmstudio", "lms": "lmstudio", "ollama": "auto"} {
+		"llama-server": "llama.cpp", "LMStudio": "lmstudio", "lm studio": "lmstudio", "lms": "lmstudio", "ollama": "auto",
+		"caminus": "caminus", "Caminus": "caminus"} {
 		if got := normBackend(in); got != want {
 			t.Errorf("normBackend(%q) = %q, want %q", in, got, want)
 		}
@@ -179,6 +180,15 @@ func TestBackendAndRel(t *testing.T) {
 	c.Backend = "auto"
 	if bases, _, _ := c.server(); len(bases) != 1 || !strings.HasSuffix(bases[0], ":8091") {
 		t.Errorf("auto bases %v", bases)
+	}
+	// caminus: the port from server_config, else its launcher's default
+	c.Backend = "caminus"
+	if bases, _, _ := c.server(); len(bases) != 1 || !strings.HasSuffix(bases[0], ":8091") {
+		t.Errorf("caminus bases with server_config %v", bases)
+	}
+	c.ServerConfig = ""
+	if bases, _, _ := c.server(); len(bases) != 1 || bases[0] != "http://127.0.0.1:8092" {
+		t.Errorf("caminus bases %v", bases)
 	}
 	home, _ := os.UserHomeDir()
 	for in, want := range map[string]string{"~": home, "~/x": filepath.Join(home, "x"), "/abs/p": "/abs/p", `\rooted`: `\rooted`,

@@ -108,6 +108,7 @@ llm-top -version
 | **MACHINE** | VRAM (one gauge per GPU when there are several, and which ones hold the model), RAM, the inference process's memory; on Windows with an NPU, its load and memory, and with AMD's `xrt-smi` its hardware contexts, commands/s and the processes holding them |
 | **AGENTS** | Qwen Code sessions of the last 6 hours and what the selected one is doing |
 | **ACTIVITY** | prompts, tool calls with duration and result, replies, compactions |
+| **CAMINUS** | only for a [Caminus](#caminus) server: the engine against its bandwidth floor, the ms/token and TTFT splits, DFlash acceptance per content class, the prompt cache, the two cards, reliability and the agents as the server sees them |
 
 ## Speculative decoding
 
@@ -173,6 +174,39 @@ the newest conversation (`~/.lmstudio/conversations`: your prompts, thinking, re
 no message text is shown. With several models loaded, `router_model` picks one. llm-top
 never loads or unloads models.
 
+### Caminus
+
+<p align="center">
+  <img src="docs/caminus.svg" alt="llm-top watching a Caminus server: the CAMINUS panel under CONTEXT, power per card in MACHINE" width="100%">
+</p>
+
+<p align="center"><sub>Caminus' numbers in this image come from its mock server (synthetic engine values and cards).</sub></p>
+
+Caminus serves llama-server's monitoring surface (`/health`, `/props`, `/slots`, `/metrics` with llama-server's
+names), so everything above works as for a llama-server, and adds a versioned JSON status, `GET /caminus/status`.
+With `backend` `auto` llm-top tells it by `"engine": "caminus"` in `/props` (or set `"backend": "caminus"`) and adds:
+
+| Where | Shows |
+|---|---|
+| **CAMINUS** `speed` | decode speed as a share of the engine's bandwidth floor (the time the slowest card takes to stream one token's bytes; above 100% when drafts are accepted), and the median verify pass against it |
+| `token` | ms per token, split into the verify pass (`k3`), drafter, sampler and host (window means, so the parts add up) |
+| `ttft` | time to first token, split into queue, cache restore, batched prefill, hand-off, prompt passes and host, and the prefill rate |
+| `dflash` | draft acceptance, tokens per pass and the speedup over plain decoding; per content class (prose, code, shell, tool) the acceptance and the share accepted at each draft position |
+| `cache` | prompt tokens reused by tier (VRAM, disk, exact), the VRAM tier's slots and size, the disk tier against its cap, restore times (p50 / p95), where requests started from, the longest common prefix |
+| `cards` | each card's pass time and its wait on the exchange between the cards, and the link's rate |
+| `health` | bails (recovered / failed), retries, KFD evictions, page migrations, refusals and errors; a green check when there are none |
+| `agents` | requests, tool calls and tool-call parse failures, reasoning loops flagged, reasoning vs answer tokens, requests that hit `max_tokens` |
+| **CONTEXT** `engine` | dense or QSA attention, KV bytes per card, what the engine holds and has left |
+| **MACHINE** `power` | both cards' power and tokens per joule (decode, prefill); per card power, clock, junction temperature, performance level and the margin below its VRAM guard line (when the server reads its hardware) |
+| **Header** | a red `▸ loop` while the running request's reasoning repeats one line |
+
+The status is read in llm-top's existing poll: every 500 ms while a request runs (whenever `/slots` is read), every
+2 s otherwise, never while the server is loading or down. Its version is checked; another version is named, not
+read. In two columns the CAMINUS panel sits under CONTEXT, and when the terminal is short the prompt-size chart
+goes first, then the panel's later sections. The `caminus` process (its `comm` on Linux) is found like
+`server_process`, so MACHINE shows its memory and its VRAM on each card. A plain llama-server is never asked for the
+status, and with `"backend": "llama.cpp"` a Caminus server is shown as a llama-server.
+
 ## Config
 
 `llm-top.json` holds whatever llm-top can't detect. It is created with defaults on first run and looked up in
@@ -192,8 +226,8 @@ is left alone and the defaults are used. Either way the footer says what is wron
 
 | Field | Default | Meaning |
 |---|---|---|
-| `server_url` | `""` | base URL; empty = `http://127.0.0.1:<port>` with the port from `server_config`, else `:8080`, `:1234` and wherever the running `server_process` listens, in turn |
-| `backend` | `auto` | `auto`, `llama.cpp` or `lmstudio` |
+| `server_url` | `""` | base URL; empty = `http://127.0.0.1:<port>` with the port from `server_config`, else `:8080`, `:1234` (`:8092` with `backend` `caminus`) and wherever the running `server_process` (or `caminus`) listens, in turn |
+| `backend` | `auto` | `auto`, `llama.cpp`, `caminus` or `lmstudio`; `auto` tells Caminus by its `/props` engine marker |
 | `api_key` | `""` | Bearer token; empty = `$LLAMA_API_KEY` (llama-server) or `$LM_API_TOKEN` (LM Studio) |
 | `router_model` | `""` | model to watch in llama-server router mode or with several LM Studio models loaded; empty = first loaded |
 | `server_config` | `llm-server.json` | optional JSON with `port`, `alias`, `model` (shared with server launch scripts) |
@@ -308,6 +342,9 @@ by a test (blocks and box lines become shapes, so they look the same in any font
 ```sh
 LLMTOP_SHOTS=docs go test -run TestScreenshots ./src     # PowerShell: $env:LLMTOP_SHOTS='docs'; go test -run TestScreenshots ./src
 ```
+
+`TestGoldenFrames` compares a few fixed frames (a plain llama-server, a Caminus server) with `src/testdata/frame_*.txt`;
+after a deliberate change to what they show, `LLMTOP_GOLDEN=update go test -run TestGoldenFrames ./src` rewrites them.
 
 ## Contributing and issues
 

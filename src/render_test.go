@@ -34,7 +34,14 @@ func TestRenderAllSizes(t *testing.T) {
 	if f := ansi.Strip(frame(t, dual, 120, 40)); !strings.Contains(f, "VRAM2") || !strings.Contains(f, "1 RX 7900 XTX · 2 RX 7900 XT · model on 1+2") {
 		t.Errorf("two cards:\n%s", f)
 	}
-	for name, st := range map[string]*state{"down": down, "busy": busy, "many": many, "lmstudio": lm, "dual": dual} {
+	cam := camState(t, "caminus_status_busy.json")
+	cam.srv.Slot.Processing, cam.srv.Busy = true, 1
+	camLone := camState(t, "caminus_status.json")
+	camLone.sessions = nil
+	camNoHW := camState(t, "caminus_status_nohw.json")
+	camNoHW.srv.Cam.Agent.Loop.Live, camNoHW.srv.Cam.Agent.Loop.Threshold = 4, 3
+	for name, st := range map[string]*state{"down": down, "busy": busy, "many": many, "lmstudio": lm, "dual": dual,
+		"caminus": cam, "caminus alone": camLone, "caminus without hardware": camNoHW} {
 		for w := 1; w <= 130; w++ {
 			for _, h := range []int{1, 2, 5, 12, 30, 60} {
 				frame(t, st, w, h)
@@ -188,7 +195,14 @@ func TestGlyphsInFont(t *testing.T) {
 	comp.srv.Busy, comp.srv.Decoded = 1, 300
 	hold := demoState(t)
 	hold.sys.Hold = "gpu job"
-	states := []*state{busy, comp, hold, {cfg: defaultConfig, bases: []string{"http://127.0.0.1:8080"}, known: map[string]*session{}}}
+	cam := camState(t, "caminus_status_busy.json")
+	cam.sessions = nil
+	cs := cam.srv.Cam
+	cs.Reliability.Bails, cs.Reliability.Errors = map[string]float64{"failed": 1}, map[string]float64{"engine": 1}
+	cs.Agent.Failures, cs.Agent.Loop.Live, cs.Agent.Loop.Flagged = map[string]float64{"cut": 1}, 9, 1
+	cam.srv.Slot.Processing, cam.srv.Busy = true, 1
+	states := []*state{busy, comp, hold, cam, camState(t, "caminus_status_nohw.json"),
+		{cfg: defaultConfig, bases: []string{"http://127.0.0.1:8080"}, known: map[string]*session{}}}
 	for _, k := range []string{"run_shell_command", "read_file", "edit", "write_file", "grep_search", "list_directory",
 		"web_fetch", "ask_user_question", "task", "todo_write", "save_memory", "skill", "mcp__x__y"} {
 		ic, _ := iconFor(event{Kind: "tool", Name: k})

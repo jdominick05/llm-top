@@ -664,15 +664,20 @@ func parseNvidiaSmi(out string) (used, tot, util float64, ok bool) {
 
 // ---------- poller ----------
 
-// procNames is what the probe looks for, by server kind.
+// procNames is what the probe looks for, by server kind. Caminus names its process "caminus" (its comm on Linux).
 func procNames(kind, configured string) []string {
 	switch kind {
 	case "lmstudio":
 		return []string{lmEngine, "LM Studio", "lm-studio", "llmster"}
 	case "llama.cpp":
 		return []string{configured}
+	case "caminus":
+		if configured == "caminus" {
+			return []string{"caminus"}
+		}
+		return []string{"caminus", configured}
 	}
-	return []string{configured, "LM Studio", "lm-studio", "llmster"}
+	return []string{configured, "caminus", "LM Studio", "lm-studio", "llmster"}
 }
 
 func (st *state) pollSys(configured, hold string) {

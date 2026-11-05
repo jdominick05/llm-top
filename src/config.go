@@ -45,7 +45,8 @@ var defaultConfig = config{
 	Process:      "llama-server",
 	HoldFile:     "llm-watchdog.hold",
 	Help: "server_url: server base URL (empty = http://127.0.0.1:<port> with port from server_config, else :8080 " +
-		"(llama-server) and :1234 (LM Studio) in turn). backend: auto, llama.cpp or lmstudio. api_key: sent as Bearer " +
+		"(llama-server) and :1234 (LM Studio) in turn; :8092 with backend caminus). backend: auto, llama.cpp, caminus or " +
+		"lmstudio (auto tells Caminus by its /props engine marker). api_key: sent as Bearer " +
 		"token (empty = $LLAMA_API_KEY or $LM_API_TOKEN). router_model: model id to watch (llama-server router mode, " +
 		"LM Studio with several loaded; empty = first loaded). server_config: optional JSON with port/alias/model. " +
 		"sessions_dir: Qwen Code projects dir (empty = ~/.qwen/projects). hold_file: first line shown as HOLD while it " +
@@ -153,6 +154,7 @@ func (c config) apiKeys() map[string]string {
 	if c.APIKey != "" {
 		k["llama.cpp"], k["lmstudio"] = c.APIKey, c.APIKey
 	}
+	k["caminus"] = k["llama.cpp"] // llama-server's flag and variable
 	return k
 }
 
@@ -165,15 +167,17 @@ func (c config) lmLogs() string {
 }
 
 // server returns the URLs to try plus alias and model name from server_config, if any. Without server_url or a
-// port in server_config, llama-server's and LM Studio's default ports are tried in turn.
-// backend is the configured backend as "auto", "llama.cpp" or "lmstudio".
+// port in server_config, llama-server's and LM Studio's default ports are tried in turn (Caminus: its launcher's).
+// backend is the configured backend as "auto", "llama.cpp", "caminus" or "lmstudio".
 func (c config) backend() string { return normBackend(c.Backend) }
 
-// normBackend accepts the usual spellings (llamacpp, llama-server, LMStudio, lms); anything else is "auto".
+// normBackend accepts the usual spellings (llamacpp, llama-server, LMStudio, lms, Caminus); anything else is "auto".
 func normBackend(s string) string {
 	switch strings.NewReplacer(" ", "", "-", "", "_", "", ".", "").Replace(strings.ToLower(s)) {
 	case "llamacpp", "llama", "llamaserver":
 		return "llama.cpp"
+	case "caminus":
+		return "caminus"
 	case "lmstudio", "lms":
 		return "lmstudio"
 	}
@@ -214,6 +218,8 @@ func (c config) server() (bases []string, alias, model string) {
 		bases = []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
 	case c.backend() == "llama.cpp":
 		bases = []string{"http://127.0.0.1:8080"}
+	case c.backend() == "caminus":
+		bases = []string{"http://127.0.0.1:8092"}
 	case c.backend() == "lmstudio":
 		bases = []string{"http://127.0.0.1:1234"}
 	default:

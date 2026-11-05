@@ -32,6 +32,8 @@ type mock struct {
 	slots     string
 	metrics   string
 	props     string
+	status    string // Caminus' /caminus/status; "" = 404, as llama-server
+	models    string // /models of a single-model server; "" = a minimal list
 
 	mu   sync.Mutex
 	hits map[string]int // path -> GETs; non-GETs are counted under "!"; "path?model" for router questions
@@ -63,6 +65,10 @@ func (m *mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"status":"ok"}`)
 		return
 	case "/models", "/v1/models":
+		if m.router == nil && m.models != "" {
+			fmt.Fprint(w, m.models)
+			return
+		}
 		if m.router == nil {
 			fmt.Fprint(w, `{"object":"list","data":[{"id":"single","object":"model"}]}`)
 			return
@@ -115,6 +121,12 @@ func (m *mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprint(w, m.slots)
+	case "/caminus/status":
+		if m.status == "" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, m.status)
 	default:
 		http.NotFound(w, r)
 	}
@@ -157,10 +169,16 @@ func readFixture(t *testing.T, name string) string {
 // run polls the server like pollServer does, with a fake clock, and returns the state.
 func run(t *testing.T, url, key, want string, rounds int, step func(i int)) *state {
 	t.Helper()
+	return runAs(t, url, key, want, "auto", rounds, step)
+}
+
+// runAs is run with a configured backend.
+func runAs(t *testing.T, url, key, want, backend string, rounds int, step func(i int)) *state {
+	t.Helper()
 	cfg := defaultConfig
 	cfg.path = "test.json"
 	st := &state{cfg: cfg, bases: []string{url}, known: map[string]*session{}}
-	c := newClient([]string{url}, map[string]string{"llama.cpp": key, "lmstudio": key}, want, "auto", t.TempDir())
+	c := newClient([]string{url}, map[string]string{"llama.cpp": key, "lmstudio": key, "caminus": key}, want, backend, t.TempDir())
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < rounds; i++ {
 		if step != nil {

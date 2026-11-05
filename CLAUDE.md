@@ -1,7 +1,7 @@
 # llm-top
 
-Full-screen Go TUI (Bubble Tea v2 + Lip Gloss v2) that watches a llama.cpp `llama-server` or an LM Studio server
-and the Qwen Code agents using it. Windows and Linux (amd64 releases). Module `llmtop`, go.mod says `go 1.26.0` (CI and the
+Full-screen Go TUI (Bubble Tea v2 + Lip Gloss v2) that watches a llama.cpp `llama-server`, a Caminus server
+(llama-server's surface plus `/caminus/status`) or an LM Studio server and the Qwen Code agents using it. Windows and Linux (amd64 releases). Module `llmtop`, go.mod says `go 1.26.0` (CI and the
 release workflow use that), local builds use Go 1.27.1. License AGPL-3.0-or-later; every source and script
 starts with the SPDX header, keep it on new files.
 
@@ -13,10 +13,11 @@ machine-specific belongs in the code or the committed files.
 | Source | Where | Cadence |
 |---|---|---|
 | `/health` | `server_url` (default `http://127.0.0.1:<port from server_config>`, else 8080) | 500 ms |
-| `/props` | n_ctx, total_slots, alias, model path, `is_sleeping` | 2 s |
+| `/props` | n_ctx, total_slots, alias, model path, `is_sleeping`; `engine: "caminus"` switches `auto` to the caminus backend (only a 200 that decodes; no marker switches back), `caminus.status` names the status route | 2 s |
 | `/models` | router-mode detection (entries with `status`); in router mode also the target and whether it sleeps, read before any `?model=` question | 10 s, every round in router mode |
 | `/metrics` | Prometheus text, `llamacpp:` prefix stripped; `requests_processing` or moved token counters = busy; labelled series skipped except `spec_decode_num_accepted_tokens_per_pos_total` (kept as `name.N`); `specHist` keeps per-poll `spec_decode_*` deltas | 500 ms (5 s retry when off) |
 | `/slots` | only while busy (or every round without `--metrics`), plus once at startup and once per router target switch (never while the target sleeps); `params["speculative.types"]` names the drafter (`/props` always says `none`) | 500 ms |
+| `/caminus/status` | kind `caminus` only (a plain llama-server is never asked): versioned JSON (`version` 1, else a note), parsed by `parseCam`; in the rounds that read `/slots` while it answers 200, else at `/props`' pace; never while down, loading or sleeping (`llamaRound` returns first) | 500 ms busy, 2 s idle |
 | Qwen Code logs | `sessions_dir/*/chats/*.jsonl`, tailed by byte offset; last 6 h, newest 6 | 1.5 s |
 | Savings ledger | the same `.jsonl` files, all of them, only `usageMetadata` lines | 10 s |
 | LM Studio | `/api/v1/models` (loaded instance, context_length); in between a TCP connect (not logged) checks liveness | 10 s (`lmModelsEvery`), at once when a request starts |
@@ -52,9 +53,15 @@ build and test with `./src` or `./...` from the root.
   so request bodies, i.e. the user's chats, never match). `srvClient.detect` tells the backends apart,
   `lmRound` / `applyLM` in server.go. Auto mode tries `:8080` then `:1234`, rotating while nothing answers.
 - `specRows` (main.go) / `specHist`, `drafters`, `specPos` (server.go): the speculative decoding rows in THROUGHPUT.
+- `caminus.go`: `camStatus` (the part of `/caminus/status` v1 shown; nullable numbers are pointers), `parseCam`
+  (version check first; a field of the wrong type loses only that field), `camRows` / `camBox` (the CAMINUS panel:
+  speed vs the bandwidth floor, ms/token and TTFT splits from window means, DFlash per class and position, the prompt
+  cache, cards, health, agents), `camContextRow` (CONTEXT), `camMachineRows` (MACHINE), `camLoop` (the alert, also in
+  the status line while busy). The client side (`statusPath`, `lastStatus`, `statusOK`) is in `llamaRound`.
 - `bottleneck.go`: `bottleneck()` (pure verdict, thresholds as consts) and `fallbackRows()` for THROUGHPUT.
 - `sys.go`: `probeSys` switches on `runtime.GOOS`; parsers (`parseWinProbe`, `probeLinux`, `parseNvidiaSmi`) are
-  plain functions so tests run on any OS. No build tags. Several GPUs (Windows): `useCards` sums the cards holding
+  plain functions so tests run on any OS. No build tags. `procNames` adds `caminus` (Caminus' comm, set by prctl) for
+  kind `caminus` and in auto mode, never for an explicit llama.cpp. Several GPUs (Windows): `useCards` sums the cards holding
   at least `modelCardGB` of the process's VRAM; `overflow` (bottleneck.go) judges spill per card. Linux: the same via
   `amdGPUs` + `drmMem` (amdgpu); NVIDIA: biggest card only.
 - `npu.go`: `npuState` (filled by the Windows probe's `npu_*` lines), `parseXrtSmi` (text table, fixture
@@ -69,13 +76,21 @@ build and test with `./src` or `./...` from the root.
 - `config.go`: `config` (embeds `priceCfg`), lookup order, `rel()` path resolution, `server()`.
 - `savings.go`: `priceCfg` defaults, the per-day token `ledger` (`update`), `cost`.
 - Tests: `server_test.go` (mock llama-server per setup: idle, busy, no metrics, `--no-slots`, api key,
-  loading/down, multi-slot, router, sleeping, speculative decoding), `sys_test.go` (fake /proc + /sys), `config_test.go`,
+  loading/down, multi-slot, router, sleeping, speculative decoding; `mock.status` serves `/caminus/status`),
+  `caminus_test.go` (the parser, detection, status cadence by hit counts, forced / explicit backends, version, key,
+  marker gone, the panels and alerts), `sys_test.go` (fake /proc + /sys), `config_test.go`,
   `session_test.go`, `lmstudio_test.go` (log states, rotation, mock LM Studio, candidates), `bottleneck_test.go`. `frame()` renders and fails on any line wider than the terminal. `testdata/` holds real
-  `/slots`, `/metrics`, `/props` captures (anonymized).
-- Panels: CONTEXT (left), THROUGHPUT, SAVINGS, MACHINE, AGENTS (right), ACTIVITY (full width, fills the rest).
-  Below 110 columns everything stacks. The frame never exceeds the terminal height: panels are `box`es that
-  `shrink()` trims (SAVINGS, MACHINE, CONTEXT, AGENTS list, THROUGHPUT, each down to its `min` first) before
-  ACTIVITY drops below 3 rows; `frame()` in tests fails on too many lines as well as too wide ones.
+  `/slots`, `/metrics`, `/props` captures (anonymized) and `caminus_*` captures from Caminus' mock server
+  (`tools/k3_serve.py --draft --hw-fixture`, synthetic values; `_nohw`: no hardware reader, no drafter; paths and the
+  build hash replaced). `TestGoldenFrames` (screenshots_test.go) compares fixed frames with `testdata/frame_*.txt`
+  (clock and core count masked); `LLMTOP_GOLDEN=update` rewrites them, only after a deliberate change to what they show.
+- Panels: CONTEXT (left), THROUGHPUT, SAVINGS, MACHINE, AGENTS (right), ACTIVITY (full width, fills the rest);
+  CAMINUS under CONTEXT for a Caminus server (after THROUGHPUT when stacked). Below 110 columns everything stacks.
+  The frame never exceeds the terminal height: panels are `box`es that `shrink()` trims (SAVINGS, MACHINE, CAMINUS,
+  CONTEXT, AGENTS list, THROUGHPUT, each down to its `min` first) before ACTIVITY drops below 3 rows; in two columns
+  the left one alone: CONTEXT's prompt-size chart, CAMINUS to its 3 speed rows, CONTEXT to its gauge, then the rest.
+  Without Caminus the left column is cut exactly as before (the plain golden frame checks it). `frame()` in tests
+  fails on too many lines as well as too wide ones.
 - `install.ps1` / `install.sh` (oneshot installers), `release.ps1`, `.github/workflows/{ci,release}.yml`.
 
 All pollers write into `state` under `st.mu`; `render()` holds the lock for the whole frame. Session files are
@@ -121,6 +136,8 @@ shown as "131k?".
 - The context composition (waffle + legend) is an estimate: characters per part type since the last
   compaction / 3.6, scaled to the session's last reported prompt size. Keep it labelled "est.".
 - Read-only: never send anything but GETs to the server, never write the session logs.
+- A server without Caminus must render exactly as before: Caminus rows appear only for kind `caminus` with a live
+  model (`TestGoldenFrames`' llama-server frame, `TestCaminusNotAsked`).
 - One static binary (CGO_ENABLED=0), no runtime files besides `llm-top.json`, no new dependencies.
 - Match the existing style: short names, `fg(c).Render`, `fmt.Sprintf` rows passed to `panel()`, flags parsed by
   hand from `os.Args` (no `flag` package), section comments `// ---------- name ----------`, gofmt.

@@ -4,7 +4,7 @@
 // llm-top: live TUI for the 24/7 llama-server and the Qwen Code agents using it.
 //
 // Sources (all read-only; locations and keys in llm-top.json, see config.go):
-//   - llama-server /health, /props, /metrics, /slots (server.go)
+//   - llama-server /health, /props, /metrics, /slots (server.go); Caminus also /caminus/status (caminus.go)
 //   - Qwen Code session logs, ~/.qwen/projects/*/chats/*.jsonl (tailed incrementally)
 //   - machine counters every 5 s: PowerShell on Windows, /proc and sysfs on Linux (sys.go)
 //   - an optional hold file (GPU job in progress)
@@ -1085,7 +1085,7 @@ func (m model) render() string {
 	}
 	sp := spin[m.frame%len(spin)]
 	off := srv.offline() // why nothing is live, "" while a model is up
-	if off == "no server running" && sys.Pid > 0 && !sys.Guess && strings.EqualFold(strings.TrimSuffix(sys.Proc, ".exe"), strings.TrimSuffix(st.cfg.Process, ".exe")) {
+	if off == "no server running" && sys.Pid > 0 && !sys.Guess && (strings.EqualFold(strings.TrimSuffix(sys.Proc, ".exe"), strings.TrimSuffix(st.cfg.Process, ".exe")) || sys.Proc == "caminus") {
 		off = sys.Proc + " is running but not answering" // starting up, stuck, or on another port
 	}
 	status := ""
@@ -1172,6 +1172,11 @@ func (m model) render() string {
 			fg(cGreen).Render(kTok(srv.Decoded)), fg(cGreen).Render(fmt.Sprintf("%.1f", srv.curGen)),
 			fg(cMuted).Render("for "+dur(time.Since(srv.busySince))))
 	}
+	if srv.Cam != nil && srv.busy() && off == "" && sys.Hold == "" {
+		if l := camLoop(srv.Cam); l != "" { // the reasoning repeats itself: worth seeing before the request ends
+			status += "  " + l
+		}
+	}
 	if srv.compacting() && srv.Up && !srv.Auth && sys.Hold == "" {
 		pill = pillStyle(cOrange).Render(sp + " ✂ COMPACTING")
 		what := "✂ reading the history to summarize it · "
@@ -1192,6 +1197,9 @@ func (m model) render() string {
 	}
 	if mdl == "" && srv.Props.Path != "" {
 		mdl = strings.TrimSuffix(baseName(srv.Props.Path), ".gguf")
+	}
+	if alias == "" && srv.Kind == "caminus" {
+		alias = "caminus"
 	}
 	if alias == "" {
 		alias = "llama-server"
@@ -1247,6 +1255,9 @@ func (m model) render() string {
 		ctx = append(ctx, fmt.Sprintf("%s %s  %s %s  %s %s  %s",
 			fg(cBlue).Render("█"), "reused", fg(cYellow).Render("█"), "read", fg(cGreen).Render("█"), "written",
 			fg(cText).Bold(true).Render(fmt.Sprintf("%s / %s  (%.0f%%)", kTok(used), kTok(nctx)+ctxMark, 100*float64(used)/float64(nctx)))))
+		if r := camContextRow(srv.Cam); r != "" && srv.Kind == "caminus" {
+			ctx = append(ctx, r)
+		}
 	}
 	ctx = append(ctx, "")
 
@@ -1257,6 +1268,7 @@ func (m model) render() string {
 		}
 	}
 	// waffle: what fills the context (estimated from the selected session)
+	waffleEnd := -1 // rows up to the waffle's legend; the prompt-size chart after them goes first next to CAMINUS
 	if sess != nil {
 		total := sess.lastUsage.Prompt
 		est := sess.estimate(total)
@@ -1308,6 +1320,7 @@ func (m model) render() string {
 			}
 			ctx = append(ctx, l)
 		}
+		waffleEnd = len(ctx)
 		ctx = append(ctx, "")
 
 		// prompt size per request, compactions in red
@@ -1450,6 +1463,9 @@ func (m model) render() string {
 			}
 			mach = append(mach, fg(cMuted).Render(npuLine(n)))
 		}
+		if srv.Kind == "caminus" && off == "" {
+			mach = append(mach, camMachineRows(srv.Cam)...)
+		}
 	} else if st.sysTried {
 		mach = append(mach, fg(cMuted).Render("no machine counters on this system"))
 	} else {
@@ -1549,9 +1565,16 @@ func (m model) render() string {
 	room = H - 5 - 3
 	var body string
 	if twoCol {
-		ctxBox.cut(ctxBox.height()-room, 0)
+		cBox := camBox(srv, lw) // Caminus: under CONTEXT; each keeps its first rows longest
+		if cBox.height() > 0 {  // the prompt-size chart, CAMINUS down to its speed rows, CONTEXT down to its gauge, ...
+			if waffleEnd > 0 {
+				ctxBox.cut(ctxBox.height()+cBox.height()-room, waffleEnd)
+			}
+			shrink(room, cBox, ctxBox)
+		}
+		ctxBox.cut(ctxBox.height()+cBox.height()-room, 0) // without Caminus, CONTEXT alone as before
 		shrink(room, savBox, machBox, agBox, thrBox)
-		left, right := ctxBox.render(), joinBoxes([]*box{thrBox, savBox, machBox, agBox})
+		left, right := joinBoxes([]*box{ctxBox, cBox}), joinBoxes([]*box{thrBox, savBox, machBox, agBox})
 		switch {
 		case left == "":
 			body = right
@@ -1561,8 +1584,9 @@ func (m model) render() string {
 			body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 		}
 	} else {
-		shrink(room, savBox, machBox, ctxBox, agBox, thrBox)
-		body = joinBoxes([]*box{ctxBox, thrBox, savBox, machBox, agBox})
+		cBox := camBox(srv, W)
+		shrink(room, savBox, machBox, cBox, ctxBox, agBox, thrBox)
+		body = joinBoxes([]*box{ctxBox, thrBox, cBox, savBox, machBox, agBox})
 	}
 
 	// ----- activity feed fills the rest -----

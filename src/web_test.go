@@ -83,6 +83,22 @@ func TestWebFrame(t *testing.T) {
 	}
 }
 
+// The web view is the TUI's frame: a Caminus server's panel is in it, and the page asks nothing of the server.
+func TestWebCaminus(t *testing.T) {
+	st := camState(t, "caminus_status.json")
+	st.sessions = nil
+	w := get(t, st.webHandler(""), "GET", "/frame?w=120&h=40", nil)
+	body := w.Body.String()
+	for _, want := range []string{"CAMINUS", "floor", "ms/token", "ttft", "queue", "prose", "reused", "XTX", "health", "tok/J", "parse"} {
+		if !strings.Contains(body, ">"+want+"</text>") { // one <text> per word
+			t.Errorf("frame lacks %q", want)
+		}
+	}
+	if w.Code != 200 || strings.Contains(body, "<script") {
+		t.Errorf("frame: %d", w.Code)
+	}
+}
+
 func TestWebReadOnlyAndToken(t *testing.T) {
 	st := demoState(t)
 	open := st.webHandler("")
@@ -116,9 +132,12 @@ func TestFrameColors(t *testing.T) {
 	st := demoState(t)
 	st.srv.Slot = slotJSON{NCtx: 131072, Processing: true, Task: 7, NPrompt: 61400, NProcessed: 9000, NCache: 52800}
 	st.srv.Busy, st.srv.curRead = 1, 2400
+	cam := camState(t, "caminus_status.json")
+	cam.sessions = nil
 	sgr := regexp.MustCompile("\x1b\\[([0-9;]*)m")
-	for _, size := range [][2]int{{120, 40}, {90, 60}} {
-		for _, m := range sgr.FindAllStringSubmatch(model{st: st, w: size[0], h: size[1]}.render(), -1) {
+	for _, size := range [][3]int{{120, 40, 0}, {90, 60, 0}, {120, 40, 1}, {200, 60, 1}} {
+		s := map[int]*state{0: st, 1: cam}[size[2]]
+		for _, m := range sgr.FindAllStringSubmatch(model{st: s, w: size[0], h: size[1]}.render(), -1) {
 			ps := strings.Split(m[1], ";")
 			for k := 0; k < len(ps); k++ {
 				switch ps[k] {
@@ -161,7 +180,7 @@ func TestFrameWideGlyphs(t *testing.T) {
 // TestRenderWebSizes: /frame accepts up to 200 x 150, beyond what TestRenderAllSizes covers.
 func TestRenderWebSizes(t *testing.T) {
 	down := &state{cfg: defaultConfig, bases: []string{"http://127.0.0.1:8080"}, known: map[string]*session{}}
-	for name, st := range map[string]*state{"down": down, "busy": demoState(t)} {
+	for name, st := range map[string]*state{"down": down, "busy": demoState(t), "caminus": camState(t, "caminus_status.json")} {
 		for w := 131; w <= 200; w++ {
 			for _, h := range []int{10, 40, 70, 150} {
 				frame(t, st, w, h)

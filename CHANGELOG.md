@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Caminus support: a `caminus` backend, detected in `auto` from `"engine": "caminus"` in `/props`. Caminus serves
+  llama-server's `/health`, `/props`, `/slots` and `/metrics`, which llm-top reads as before, plus a versioned JSON
+  status, `GET /caminus/status` (version 1), read in the existing poll: every round while `/slots` is read, else
+  every 2 s, never while loading or down; a plain llama-server is never asked for it. A CAMINUS panel (under CONTEXT;
+  after THROUGHPUT in one column) shows the decode speed against the engine's bandwidth floor, the ms/token split
+  (verify, drafter, sampler, host), the TTFT split (queue, restore, batched prefill, hand-off, prompt passes, host),
+  DFlash acceptance per content class and draft position, the prompt cache (tokens by tier, VRAM slots, disk use
+  against its cap, restore times, request sources), the two cards' pass and exchange-wait times, reliability (bails,
+  retries, KFD evictions, refusals, errors) and the agents as the server sees them (tool-call parse failures,
+  reasoning loops, reasoning vs answer tokens). CONTEXT gets an `engine` line (dense or QSA attention, KV per card),
+  MACHINE power per card and tokens per joule, the header a `▸ loop` alert while the running request's reasoning
+  repeats itself. The `caminus` process is found by name, so its memory and per-card VRAM show in MACHINE.
+- Tests: golden frames (`TestGoldenFrames`, `src/testdata/frame_*.txt`) for an idle llama-server and a Caminus
+  server; the llama-server one was written by the code before Caminus support.
+
 - Web view: the dashboard in a browser, for checking on the machine from elsewhere (a phone over VPN). The frame
   is the TUI's own, rendered to SVG, sized to the window and refreshed every second; tab or a tap switches the
   session. `"web": {"enabled": true}` serves it while the TUI runs, `-web [host:port]` serves it without a TUI.

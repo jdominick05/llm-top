@@ -7,18 +7,25 @@ package main
 //
 //	LLMTOP_SHOTS=docs go test -run TestScreenshots ./src
 //
-// A relative LLMTOP_SHOTS is taken from the repository root (tests run in src/). Writes docs/banner.svg, docs/demo.svg (animated), docs/lmstudio.svg and docs/narrow.svg. No real sessions,
-// paths or numbers go in; everything below is invented.
+// A relative LLMTOP_SHOTS is taken from the repository root (tests run in src/). Writes docs/banner.svg, docs/demo.svg (animated), docs/lmstudio.svg, docs/narrow.svg and docs/caminus.svg. No real sessions,
+// paths or numbers go in; everything below is invented (Caminus' numbers come from its mock server's fixtures).
+//
+// TestGoldenFrames compares fixed frames with testdata/frame_*.txt; after a deliberate change to what they show:
+//
+//	LLMTOP_GOLDEN=update go test -run TestGoldenFrames ./src
 
 import (
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ---------- demo state ----------
@@ -308,4 +315,85 @@ func TestScreenshots(t *testing.T) {
 	st.srv.Slot = slotJSON{NCtx: 131072, NPrompt: 64600}
 	st.srv.Decoded = 412
 	save("narrow.svg", svgFrames([]string{model{st: st, w: 92, h: 70}.render()}, "llm-top — 92 columns", 1))
+
+	// Caminus, writing: the engine panel next to an agent session
+	st = camState(t, "caminus_status_busy.json")
+	st.srv.Slot.Processing, st.srv.Busy, st.srv.Decoded, st.srv.curGen = true, 1, 47, 52.4
+	st.srv.busySince = time.Now().Add(-3 * time.Second)
+	for i := 0; i < 160; i++ {
+		st.srv.GenRate.push(math.Max(0, 50+6*math.Sin(float64(i)/3))*float64(i/30%2), 240)
+		st.srv.ReadRate.push(math.Max(0, 330*math.Sin(float64(i)/5))*float64(i/30%2), 240)
+	}
+	save("caminus.svg", svgFrames([]string{model{st: st, w: W, h: 50}.render()}, "llm-top — Caminus", 1))
+}
+
+// ---------- golden frames ----------
+
+// goldenPlain is an idle llama-server without agent sessions: nothing in its frame depends on the clock but the
+// header's time.
+func goldenPlain(t *testing.T) *state {
+	st := demoState(t)
+	st.sessions = nil
+	st.sav.First = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	return st
+}
+
+var goldenMask = []struct {
+	re   *regexp.Regexp
+	with string
+}{{regexp.MustCompile(`\d\d:\d\d:\d\d$`), "hh:mm:ss"}, {regexp.MustCompile(`of \d+ cores[^│]*`), "of N cores … "}}
+
+// goldenText is the frame as text, the clock and this machine's core count masked (with the rest of its row's
+// panel line: the count's width moves where that line is cut).
+func goldenText(st *state, w, h int) string {
+	ls := strings.Split(ansi.Strip(model{st: st, w: w, h: h}.render()), "\n")
+	for i, l := range ls {
+		for _, m := range goldenMask {
+			l = m.re.ReplaceAllString(l, m.with)
+		}
+		ls[i] = l
+	}
+	return strings.Join(ls, "\n") + "\n"
+}
+
+// TestGoldenFrames: the plain llama-server view is what it was before Caminus support (the golden was written by
+// the code before it), and the Caminus panels show the fixture's numbers where they did.
+func TestGoldenFrames(t *testing.T) {
+	old := version
+	version = "0.1.0"
+	defer func() { version = old }()
+	cam := camState(t, "caminus_status.json")
+	cam.sessions = nil
+	cam.sav.First = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		st   *state
+		w, h int
+	}{{"frame_llama_120x40.txt", goldenPlain(t), 120, 40}, {"frame_caminus_120x40.txt", cam, 120, 40}, {"frame_caminus_90x70.txt", cam, 90, 70}} {
+		got := goldenText(c.st, c.w, c.h)
+		if os.Getenv("LLMTOP_GOLDEN") == "update" {
+			if err := os.WriteFile(filepath.Join("testdata", c.name), []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		want := readFixture(t, c.name)
+		if got == want {
+			continue
+		}
+		gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
+		for i := 0; i < max(len(gl), len(wl)); i++ {
+			g, w := "", ""
+			if i < len(gl) {
+				g = gl[i]
+			}
+			if i < len(wl) {
+				w = wl[i]
+			}
+			if g != w {
+				t.Errorf("%s line %d (LLMTOP_GOLDEN=update after a deliberate change):\n got %q\nwant %q", c.name, i+1, g, w)
+				break
+			}
+		}
+	}
 }

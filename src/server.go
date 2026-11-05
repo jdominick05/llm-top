@@ -8,6 +8,7 @@
 // a slot is busy without resetting the idle timer; /slots is only polled while something runs, because each GET
 // /slots wakes a sleeping server and resets its --sleep-idle-seconds timer. Without --metrics, /slots is polled
 // every round. 401 means an API key is needed (api_key or $LLAMA_API_KEY), 501 that the endpoint is disabled.
+// Caminus (caminus.go) is asked the same, plus GET /caminus/status: every round while /slots is, else every 2 s.
 package main
 
 import (
@@ -84,6 +85,10 @@ type propsJSON struct {
 	Path     string `json:"model_path"`
 	Build    string `json:"build_info"`
 	Sleeping bool   `json:"is_sleeping"`
+	Engine   string `json:"engine"` // "caminus": the Caminus engine marker; llama-server has no such key
+	Caminus  struct {
+		Status string `json:"status"` // the status route
+	} `json:"caminus"`
 }
 
 type ring struct{ v []float64 }
@@ -154,7 +159,11 @@ type serverState struct {
 	Info modelInfo  // LM Studio's model details
 	Done []reqEvent // finished requests since llm-top started, oldest first
 
-	Kind     string // "llama.cpp" or "lmstudio"
+	Cam     *camStatus // Caminus: the last /caminus/status read, nil before the first or after a failed one
+	CamCode int        // its HTTP code, 0 = not asked yet
+	CamNote string     // why a 200 status could not be used (another version)
+
+	Kind     string // "llama.cpp", "caminus" or "lmstudio"
 	Base     string // URL that answered (or was tried last)
 	LM       lmState
 	LMLoaded int // LM Studio: loaded LLM instances
@@ -230,7 +239,7 @@ type srvClient struct {
 	bases      []string // candidates, tried in turn while nothing answers
 	bi         int
 	keys       map[string]string // per kind
-	backend    string            // "auto", "llama.cpp" or "lmstudio"
+	backend    string            // "auto", "llama.cpp", "caminus" or "lmstudio"
 	kind       string            // detected for base, "" = not yet
 	lm         *lmLog
 
@@ -246,6 +255,9 @@ type srvClient struct {
 	lmModel                string          // LM Studio: the model watched
 	more                   func() []string // extra candidate bases (the server process's listening ports), may be nil
 	misses                 int             // rounds in a row without an answer
+	lastStatus             time.Time       // Caminus: the last /caminus/status question
+	statusOK               bool            // ... and whether it answered 200
+	statusPath             string          // from /props' caminus.status
 }
 
 // rotateAfter is how many rounds without an answer move on to the next candidate once a server has answered: one
@@ -297,7 +309,10 @@ type probe struct {
 	Props                             propsJSON
 	Metrics                           map[string]float64
 	Slots                             []slotJSON
-	Miss                              bool // no answer, but too soon to call the server gone: keep the last picture
+	CamCode                           int        // /caminus/status, 0 = not asked
+	Cam                               *camStatus // nil unless CamCode is 200 and the status is version 1
+	CamNote                           string     // why a 200 status was not used
+	Miss                              bool       // no answer, but too soon to call the server gone: keep the last picture
 }
 
 func (c *srvClient) round(now time.Time) probe {
@@ -338,6 +353,7 @@ func (c *srvClient) addBases(bs []string) {
 }
 
 // detect tells LM Studio (GET /api/v1/models lists "models") from llama-server (404 there, /health answers).
+// Caminus answers like llama-server: llamaRound tells it apart by /props' engine marker.
 func (c *srvClient) detect() string {
 	if c.backend != "auto" {
 		return c.backend
@@ -425,6 +441,7 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 	p.Health, _ = c.get("/health")
 	if p.Health == 0 || p.Health == http.StatusServiceUnavailable {
 		c.lastModels, c.lastProps, c.slotsActive = time.Time{}, time.Time{}, true // look again once it is up
+		c.lastStatus = time.Time{}
 		return p
 	}
 	// a router is asked every round: a model can be evicted or fall asleep any time, and /models never loads or
@@ -435,7 +452,7 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 		if code == http.StatusOK {
 			router, target, note, asleep := routerTarget(b, c.want)
 			if target != c.target { // another model: nothing measured on the old one applies; one idle look at it
-				c.work, c.slotsActive, c.lastProps = -1, true, time.Time{}
+				c.work, c.slotsActive, c.lastProps, c.lastStatus = -1, true, time.Time{}, time.Time{}
 			}
 			c.router, c.target, c.note = router, target, note
 			if router {
@@ -454,8 +471,15 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 		c.lastProps = now
 		var b []byte
 		if p.PropsCode, b = c.get(c.q("/props")); p.PropsCode == http.StatusOK {
-			_ = json.Unmarshal(b, &p.Props)
+			err := json.Unmarshal(b, &p.Props)
 			c.sleeping = p.Props.Sleeping || c.router && c.sleeping // a router's /models said so this round
+			// auto: Caminus by its engine marker (only a /props that answered and decoded says so)
+			if c.backend == "auto" && err == nil {
+				if k := map[bool]string{true: "caminus", false: "llama.cpp"}[p.Props.Engine == "caminus"]; k != c.kind {
+					c.kind, c.lastStatus = k, time.Time{}
+				}
+			}
+			c.statusPath = p.Props.Caminus.Status
 		}
 	}
 	busy := c.slotsActive
@@ -475,7 +499,8 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 	if c.sleeping {
 		return p
 	}
-	if busy || !c.metricsOK {
+	fast := busy || !c.metricsOK
+	if fast {
 		var b []byte
 		if p.SlotsCode, b = c.get(c.q("/slots")); p.SlotsCode == http.StatusOK {
 			if json.Unmarshal(b, &p.Slots) != nil {
@@ -486,6 +511,22 @@ func (c *srvClient) llamaRound(now time.Time) probe {
 		for _, sl := range p.Slots {
 			c.slotsActive = c.slotsActive || sl.Processing
 		}
+	}
+	// Caminus' status: in the rounds that ask /slots (while it answers), else at /props' pace
+	if c.kind == "caminus" && (fast && c.statusOK || now.Sub(c.lastStatus) >= 2*time.Second) {
+		c.lastStatus = now
+		path := c.statusPath
+		if !strings.HasPrefix(path, "/") {
+			path = camPath
+		}
+		var b []byte
+		if p.CamCode, b = c.get(c.q(path)); p.CamCode == http.StatusOK {
+			var err error
+			if p.Cam, err = parseCam(b); err != nil {
+				p.CamNote = err.Error()
+			}
+		}
+		c.statusOK = p.CamCode == http.StatusOK
 	}
 	return p
 }
@@ -556,7 +597,7 @@ func (s *serverState) apply(p probe) {
 	if !s.Up {
 		s.HaveSlots, s.Busy, s.Auth, s.Sleeping = false, 0, false, false
 		s.Metrics, s.prev, s.LM.Phase, s.Slot.Processing = nil, nil, "", false
-		s.Spec = specHist{}
+		s.Spec, s.Cam, s.CamCode, s.CamNote = specHist{}, nil, 0, ""
 		s.ReadRate.push(0, 240)
 		s.GenRate.push(0, 240)
 		s.curRead, s.curGen = 0, 0
@@ -577,7 +618,10 @@ func (s *serverState) apply(p probe) {
 	} else if p.MetricsCode != 0 {
 		s.Metrics = nil
 	}
-	codes := []int{p.PropsCode, p.MetricsCode, p.SlotsCode}
+	if p.CamCode != 0 {
+		s.Cam, s.CamCode, s.CamNote = p.Cam, p.CamCode, p.CamNote
+	}
+	codes := []int{p.PropsCode, p.MetricsCode, p.SlotsCode, p.CamCode}
 	s.Auth = false
 	for _, c := range codes {
 		if c == http.StatusUnauthorized || c == http.StatusForbidden {
